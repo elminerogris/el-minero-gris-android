@@ -1,12 +1,13 @@
-
 package com.elminerogris.agente
 
-import android.app.*
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,181 +16,969 @@ import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
+import java.net.URLEncoder
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 class AgentService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val urlNube = "https://antminer-panel.onrender.com/api/recibir_datos"
-    private var ipsConocidas = mutableSetOf<String>()
-    private var ultimoEscaneo = 0L
+    private val urlLogs = "https://antminer-panel.onrender.com/api/recibir_logs"
 
-    override fun onCreate() {
-        super.onCreate()
-        crearCanalNotificacion()
-        startForeground(101, construirNotificacion("Iniciando monitoreo LAN..."))
+    private val credencialesHttp = listOf(
+        Pair("root", "root"),
+        Pair("admin", "admin"),
+        Pair("root", "admin")
+    )
+
+    private val ipsConocidas = CopyOnWriteArrayList<String>()
+    private val cacheInfoEstatica = ConcurrentHashMap<String, MutableMap<String, Any>>()
+    private var ultimoEscaneoAuto = 0L
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(1, crearNotificacion("Monitoreando granja ASIC 24/7..."))
+        scope.coroutineContext.cancelChildren()
         scope.launch { buclePrincipal() }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun crearNotificacion(texto: String): Notification {
+        val channelId = "emg_agent_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(channelId, "El Minero Gris Agente", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        }
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        return builder
+            .setContentTitle("El Minero Gris Agente")
+            .setContentText(texto)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .build()
+    }
+
+    private fun actualizarNotificacion(texto: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm?.notify(1, crearNotificacion(texto))
     }
 
     private suspend fun buclePrincipal() {
         val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("api_key", "") ?: ""
         val subnet = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
+        if (apiKey.isEmpty()) return
 
-        while (currentCoroutineContext().isActive && apiKey.isNotEmpty()) {
+        val ipsBase = (11..15).map { "$subnet.$it" }
+        ipsConocidas.clear()
+        ipsConocidas.addAll(ipsBase)
+
+        while (currentCoroutineContext().isActive) {
             try {
-                val ahora = System.currentTimeMillis()
-                if (ipsConocidas.isEmpty() || ahora - ultimoEscaneo > 600_000L) {
-                    ultimoEscaneo = ahora
-                    actualizarNotificacion("Escaneando subred $subnet.x...")
-                    ipsConocidas = escanearRed(subnet)
+                val ahora = System.currentTimeMillis() / 1000L
+                if (ahora - ultimoEscaneoAuto > 600L) {
+                    ultimoEscaneoAuto = ahora
+                    val encontradas = escanearRed(subnet, ipsBase)
+                    ipsConocidas.clear()
+                    ipsConocidas.addAll(encontradas)
+                }
+                for (ipB in ipsBase) {
+                    if (!ipsConocidas.contains(ipB)) ipsConocidas.add(ipB)
                 }
 
-                val listaMineros = JSONArray()
-                val jobs = ipsConocidas.map { ip ->
-                    scope.async { leerMinero4028(ip) }
-                }
-                jobs.awaitAll().filterNotNull().forEach { listaMineros.put(it) }
-
-                val payload = JSONObject().apply {
-                    put("api_key", apiKey)
-                    put("mineros", listaMineros)
+                val resultados = coroutineScope {
+                    ipsConocidas.map { ip ->
+                        async(Dispatchers.IO) { extraerTodo(ip, subnet) }
+                    }.awaitAll().filterNotNull()
                 }
 
-                val resp = enviarPostJson(urlNube, payload.toString())
+                val arrMineros = JSONArray()
+                for (r in resultados) arrMineros.put(r)
+
+                val payload = JSONObject()
+                    .put("api_key", apiKey)
+                    .put("mineros", arrMineros)
+
+                val resp = postJsonNube(urlNube, payload)
                 if (resp != null) {
-                    actualizarNotificacion("En línea: ${listaMineros.length()} minero(s) activos")
+                    actualizarNotificacion("En línea: ${resultados.size} minero(s) | Subred $subnet.x")
                     val ordenes = resp.optJSONArray("ordenes")
-                    if (ordenes != null) procesarOrdenes(ordenes, subnet)
-                } else {
-                    actualizarNotificacion("Reintentando conexión con la nube...")
+                    if (ordenes != null && ordenes.length() > 0) {
+                        procesarComandos(ordenes, apiKey, subnet, ipsBase)
+                    }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
             delay(25_000L)
         }
     }
 
-    private suspend fun escanearRed(subnet: String): MutableSet<String> = coroutineScope {
-        val encontradas = mutableSetOf<String>()
-        val tareas = (2..254).map { i ->
+    // ==================== COMUNICACIÓN PUERTO 4028 ====================
+    private fun peticion4028(ip: String, comando: String, parametro: String = ""): JSONObject? {
+        return try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(ip, 4028), 2500)
+                s.soTimeout = 1800
+                val cmdObj = JSONObject().put("command", comando)
+                if (parametro.isNotEmpty()) cmdObj.put("parameter", parametro)
+                s.getOutputStream().write(cmdObj.toString().toByteArray(Charsets.UTF_8))
+                s.getOutputStream().flush()
+
+                val sb = StringBuilder()
+                val buf = ByteArray(8192)
+                val inp = s.getInputStream()
+                while (true) {
+                    val n = try { inp.read(buf) } catch (_: Exception) { -1 }
+                    if (n <= 0) break
+                    sb.append(String(buf, 0, n, Charsets.UTF_8))
+                }
+                val txt = sb.toString().replace("\u0000", "").trim()
+                if (txt.isEmpty()) return null
+                if (txt.contains("}{")) {
+                    try { return JSONObject(txt.replace("}{", ",")) } catch (_: Exception) {}
+                    try { return JSONObject(txt.substringBefore("}{") + "}") } catch (_: Exception) {}
+                }
+                JSONObject(txt)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ==================== HTTP CON DIGEST AUTH NATIVO ====================
+    private fun md5Hex(s: String): String {
+        val md = MessageDigest.getInstance("MD5")
+        return md.digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun parseDigestHeader(header: String): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        val regex = Regex("""(\w+)=(?:"([^"]*)"|([^,\s]*))""")
+        for (m in regex.findAll(header)) {
+            val k = m.groupValues[1]
+            val v = if (m.groupValues[2].isNotEmpty()) m.groupValues[2] else m.groupValues[3]
+            map[k] = v
+        }
+        return map
+    }
+
+    private fun peticionHttp(
+        ip: String,
+        endpoint: String,
+        metodo: String = "GET",
+        payloadJson: JSONObject? = null,
+        payloadForm: Map<String, String>? = null,
+        timeoutMs: Int = 2500
+    ): String? {
+        val uriPath = "/cgi-bin/$endpoint"
+        val urlStr = "http://$ip$uriPath"
+        val httpMethod = if (metodo == "GET") "GET" else "POST"
+
+        val bodyBytes: ByteArray = when (metodo) {
+            "POST_FORM" -> {
+                val form = payloadForm?.entries?.joinToString("&") {
+                    "${URLEncoder.encode(it.key, "UTF-8")}=${URLEncoder.encode(it.value, "UTF-8")}"
+                } ?: ""
+                form.toByteArray(Charsets.UTF_8)
+            }
+            "POST" -> (payloadJson?.toString() ?: "{}").toByteArray(Charsets.UTF_8)
+            else -> ByteArray(0)
+        }
+
+        val contentType = when (metodo) {
+            "POST_FORM" -> "application/x-www-form-urlencoded"
+            "POST" -> "application/json"
+            else -> null
+        }
+
+        for ((usr, pwd) in credencialesHttp) {
+            try {
+                // 1. Primera petición para obtener el reto WWW-Authenticate (401)
+                val conn1 = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    requestMethod = httpMethod
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
+                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                    setRequestProperty("Referer", "http://$ip/")
+                    if (httpMethod == "POST") {
+                        doOutput = true
+                        if (contentType != null) setRequestProperty("Content-Type", contentType)
+                        outputStream.use { it.write(bodyBytes) }
+                    }
+                }
+                val code1 = conn1.responseCode
+                if (code1 == 200) {
+                    return conn1.inputStream.bufferedReader().readText()
+                }
+                if (code1 != 401) break
+
+                val wwwAuth = conn1.getHeaderField("WWW-Authenticate") ?: break
+                if (!wwwAuth.lowercase().startsWith("digest")) break
+
+                // 2. Calcular respuesta Digest Auth (RFC 2617)
+                val d = parseDigestHeader(wwwAuth)
+                val realm = d["realm"] ?: ""
+                val nonce = d["nonce"] ?: ""
+                val qop = d["qop"] ?: ""
+                val opaque = d["opaque"]
+                val nc = "00000001"
+                val cnonce = md5Hex(System.nanoTime().toString()).substring(0, 16)
+
+                val ha1 = md5Hex("$usr:$realm:$pwd")
+                val ha2 = md5Hex("$httpMethod:$uriPath")
+                val responseHash = if (qop.isNotEmpty()) {
+                    md5Hex("$ha1:$nonce:$nc:$cnonce:auth:$ha2")
+                } else {
+                    md5Hex("$ha1:$nonce:$ha2")
+                }
+
+                val authHeader = StringBuilder()
+                    .append("""Digest username="$usr", realm="$realm", nonce="$nonce", uri="$uriPath", response="$responseHash"""")
+                if (qop.isNotEmpty()) authHeader.append(""", qop=auth, nc=$nc, cnonce="$cnonce"""")
+                if (!opaque.isNullOrEmpty()) authHeader.append(""", opaque="$opaque"""")
+
+                val conn2 = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    requestMethod = httpMethod
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
+                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                    setRequestProperty("Referer", "http://$ip/")
+                    setRequestProperty("Authorization", authHeader.toString())
+                    if (httpMethod == "POST") {
+                        doOutput = true
+                        if (contentType != null) setRequestProperty("Content-Type", contentType)
+                        outputStream.use { it.write(bodyBytes) }
+                    }
+                }
+                val code2 = conn2.responseCode
+                if (code2 == 200) {
+                    return conn2.inputStream.bufferedReader().readText()
+                }
+                if (code2 != 401) break
+            } catch (_: Exception) {
+                break
+            }
+        }
+        return null
+    }
+
+    // ==================== UTILIDADES DE PARSEO ====================
+    private fun extraerNumeros(v: Any?): List<Int> {
+        if (v == null || v == JSONObject.NULL) return emptyList()
+        if (v is Number) return listOf(v.toInt()).filter { it > 0 }
+        if (v is JSONArray) {
+            val res = mutableListOf<Int>()
+            for (i in 0 until v.length()) res.addAll(extraerNumeros(v.opt(i)))
+            return res
+        }
+        val regex = Regex("""\d+(?:\.\d+)?""")
+        return regex.findAll(v.toString()).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.filter { it > 0 }.toList()
+    }
+
+    private fun aEntero(v: Any?): Int {
+        if (v == null || v == JSONObject.NULL) return 0
+        if (v is Number) return v.toInt()
+        val s = v.toString().trim()
+        if (s.isEmpty()) return 0
+        if (s.lowercase().contains("o") && s.none { it.isDigit() }) {
+            return s.lowercase().count { it == 'o' }
+        }
+        return extraerNumeros(v).maxOrNull() ?: 0
+    }
+
+    private fun aEnteroMin(v: Any?): Int {
+        return extraerNumeros(v).filter { it in 10..65 }.minOrNull() ?: 0
+    }
+
+    private fun aFloat(v: Any?): Double {
+        if (v == null || v == JSONObject.NULL) return 0.0
+        if (v is Number) return v.toDouble()
+        val clean = v.toString().trim().replace(Regex("""[^\d.-]"""), "")
+        return clean.toDoubleOrNull() ?: 0.0
+    }
+
+    private fun formatearUptime(segundos: Any?): String {
+        val s = aEntero(segundos)
+        if (s <= 0) return "En línea"
+        val d = s / 86400
+        val h = (s % 86400) / 3600
+        val m = (s % 3600) / 60
+        return when {
+            d > 0 -> "${d}d ${h}h ${m}m"
+            h > 0 -> "${h}h ${m}m"
+            else -> "${m}m ${s % 60}s"
+        }
+    }
+
+    private fun buscarLlave(obj: JSONObject?, posibles: List<String>, defecto: Any? = null): Any? {
+        if (obj == null) return defecto
+        val mapa = mutableMapOf<String, Any>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = obj.opt(k)
+            if (v != null && v != JSONObject.NULL) mapa[k.lowercase().trim()] = v
+        }
+        for (p in posibles) {
+            val v = mapa[p.lowercase().trim()]
+            if (v != null && v.toString().isNotEmpty()) return v
+        }
+        return defecto
+    }
+
+    private fun detectarAlgoritmoYMoneda(modeloStr: String, poolUrl: String = ""): Pair<String, String> {
+        val mod = modeloStr.lowercase()
+        val url = poolUrl.lowercase()
+        if (listOf("z15", "z11", "z9", "equihash").any { mod.contains(it) } || listOf("zec.", "equihash", "zen.").any { url.contains(it) })
+            return Pair("Equihash", "ZEC")
+        if (listOf("l7", "l9", "l3", "scrypt").any { mod.contains(it) } || listOf("ltc.", "doge.", "scrypt").any { url.contains(it) })
+            return Pair("Scrypt", "LTC/DOGE")
+        if (listOf("ks3", "ks5", "ks0", "ks1", "ks2", "kheavy").any { mod.contains(it) } || listOf("kas.", "kaspa", "kheavy").any { url.contains(it) })
+            return Pair("kHeavyHash", "KAS")
+        if (listOf("ka3", "kd", "blake2s").any { mod.contains(it) } || listOf("kda.", "kadena").any { url.contains(it) })
+            return Pair("Blake2S", "KDA")
+        if (listOf("d9", "d7", "x11").any { mod.contains(it) } || listOf("dash.", "x11").any { url.contains(it) })
+            return Pair("X11", "DASH")
+        if (listOf("e9", "etc", "ethash").any { mod.contains(it) } || listOf("etc.", "ethash").any { url.contains(it) })
+            return Pair("EtHash", "ETC")
+        if (url.contains("bch.")) return Pair("SHA-256", "BCH")
+        return Pair("SHA-256", "BTC")
+    }
+
+    private fun round2(v: Double): Double = (v * 100.0).roundToInt() / 100.0
+
+    private fun normalizarHashrateUniversal(valorBruto: Any?, unidadOrigen: String, algoritmo: String = "SHA-256"): Pair<Double, String> {
+        var v = aFloat(valorBruto)
+        val u = unidadOrigen.uppercase().trim()
+        if (algoritmo == "Equihash") {
+            if (v > 50000.0) v /= 1000.0
+            return Pair(round2(v), "kSol/s")
+        }
+        if (algoritmo == "Scrypt" || algoritmo == "EtHash") {
+            if (u == "MHS" || v > 500.0) v /= 1000.0
+            return Pair(round2(v), "GH/s")
+        }
+        if (algoritmo == "X11") {
+            if (u == "MHS" || v > 500000.0) return Pair(round2(v / 1_000_000.0), "TH/s")
+            if (v > 50.0) return Pair(round2(v / 1000.0), "TH/s")
+            return Pair(round2(v), "TH/s")
+        }
+        if (u == "MHS" || v > 500000.0) return Pair(round2(v / 1_000_000.0), "TH/s")
+        if (u == "THS" || (v > 0.0 && v < 1200.0)) return Pair(round2(v), "TH/s")
+        return Pair(round2(v / 1000.0), "TH/s")
+    }
+
+    private fun esWhatsminer(st: JSONObject, stSum: JSONObject, verResp: String): Boolean {
+        val txt = "${st.optString("Type")} ${stSum.optString("Type")} $verResp".lowercase()
+        if (listOf("whatsminer", "btminer", "microbt").any { txt.contains(it) }) return true
+        if (stSum.has("Env Temp") || stSum.has("Chip Temp Max") || stSum.has("Fan Speed In")) return true
+        return false
+    }
+
+    // ==================== EXTRACTOR WHATSMINER ====================
+    private fun extraerWhatsminer(ip: String, stSum: JSONObject, subnet: String): JSONObject {
+        val ahora = System.currentTimeMillis() / 1000L
+        var est = cacheInfoEstatica[ip]
+        if (est == null || (ahora - ((est["ts"] as? Long) ?: 0L) > 600L)) {
+            val infoWm = peticion4028(ip, "get_miner_info")?.optJSONObject("Msg")
+            val verWm = peticion4028(ip, "get_version")?.optJSONObject("Msg")
+            val devdet = peticion4028(ip, "devdetails")?.optJSONArray("DEVDETAILS")
+            val modeloDet = if (devdet != null && devdet.length() > 0) devdet.optJSONObject(0)?.optString("Model", "") ?: "" else ""
+
+            var modeloStr = modeloDet.ifEmpty { buscarLlave(stSum, listOf("Type", "Model"), "WhatsMiner").toString() }.trim()
+            if (!modeloStr.lowercase().contains("whatsminer")) modeloStr = "WhatsMiner $modeloStr".trim()
+
+            val fw = buscarLlave(verWm, listOf("fw_ver", "api_ver"), buscarLlave(stSum, listOf("Firmware Version"), "BTMiner")).toString().trim()
+            val mac = buscarLlave(infoWm, listOf("mac"), est?.get("mac") ?: "-").toString().trim()
+            val serial = buscarLlave(infoWm, listOf("minersn", "sn"), "WM-${ip.replace(".", "")}").toString().trim()
+            val hostname = buscarLlave(infoWm, listOf("hostname"), "WhatsMiner${ip.substringAfterLast(".")}").toString().trim()
+            val protoRaw = buscarLlave(infoWm, listOf("proto"), "Static").toString().lowercase()
+            val netProto = if (protoRaw.contains("dhcp")) "DHCP" else "Static"
+            val netmask = buscarLlave(infoWm, listOf("netmask"), "255.255.255.0").toString().trim()
+            val gateway = buscarLlave(infoWm, listOf("gateway"), "$subnet.1").toString().trim()
+            val dns = buscarLlave(infoWm, listOf("dns"), "8.8.8.8").toString().trim()
+
+            est = mutableMapOf(
+                "ts" to ahora, "marca" to "WhatsMiner", "modelo" to modeloStr, "mac" to mac,
+                "serial" to serial, "fw" to fw, "hostname" to hostname, "net_proto" to netProto,
+                "netmask" to netmask, "gateway" to gateway, "dns" to dns
+            )
+            cacheInfoEstatica[ip] = est
+        }
+
+        val modeloStr = est["modelo"].toString()
+        val pl = peticion4028(ip, "pools")?.optJSONArray("POOLS") ?: JSONArray()
+        fun datosPool(idx: Int): List<Any> {
+            val p = if (idx < pl.length()) pl.optJSONObject(idx) else null
+            if (p != null) {
+                val url = buscarLlave(p, listOf("URL", "url"), "").toString()
+                val usr = buscarLlave(p, listOf("User", "user"), "").toString()
+                val pas = buscarLlave(p, listOf("Pass", "pass"), "123").toString()
+                val stP = buscarLlave(p, listOf("Status", "status"), if (url.isNotEmpty()) "Alive" else "Dead").toString()
+                val acc = aEntero(buscarLlave(p, listOf("Accepted", "accepted"), 0))
+                val rej = aEntero(buscarLlave(p, listOf("Rejected", "rejected"), 0))
+                return listOf(url, usr, pas, stP, acc, rej)
+            }
+            return listOf("", "", "123", "Dead", 0, 0)
+        }
+        val p1 = datosPool(0); val p2 = datosPool(1); val p3 = datosPool(2)
+        val (algoritmo, moneda) = detectarAlgoritmoYMoneda(modeloStr, p1[0].toString())
+
+        val raw5s = buscarLlave(stSum, listOf("HS RT", "MHS 5s", "MHS 1m", "MHS av"), 0)
+        val rawAvg = buscarLlave(stSum, listOf("MHS av", "MHS 15m", "HS RT"), raw5s)
+        val (hr5s, unidadHr) = normalizarHashrateUniversal(raw5s, "MHS", algoritmo)
+        var (hr30m, _) = normalizarHashrateUniversal(rawAvg, "MHS", algoritmo)
+        if (hr30m == 0.0) hr30m = hr5s
+
+        var cw = aFloat(buscarLlave(stSum, listOf("Power", "Power_RT", "Power Limit"), 0))
+        if (cw < 100.0 && hr5s > 0.0) cw = hr5s * 28.0 else if (hr5s == 0.0) cw = 120.0
+
+        val uptimeStr = formatearUptime(buscarLlave(stSum, listOf("Elapsed", "Uptime"), 0))
+        val erroresHw = aEntero(buscarLlave(stSum, listOf("Hardware Errors"), 0))
+        val tempAmb = aEntero(buscarLlave(stSum, listOf("Env Temp"), 0))
+
+        val cadenas = JSONArray()
+        val tempsMax = mutableListOf<Int>()
+        val devs = peticion4028(ip, "edevs")?.optJSONArray("DEVS") ?: JSONArray()
+        for (i in 0 until devs.length()) {
+            val dv = devs.optJSONObject(i) ?: continue
+            val tChip = aEntero(buscarLlave(dv, listOf("Chip Temp Max", "Chip Temp Avg", "Temperature"), 0))
+            val tPcb = aEntero(buscarLlave(dv, listOf("Temperature", "Chip Temp Min"), max(0, tChip - 6)))
+            val chips = aEntero(buscarLlave(dv, listOf("Effective Chips", "Chips"), 0))
+            val hw = aEntero(buscarLlave(dv, listOf("Hardware Errors"), 0))
+            val freq = aEntero(buscarLlave(dv, listOf("Chip Frequency", "Frequency"), 0))
+            val (hrC, _) = normalizarHashrateUniversal(buscarLlave(dv, listOf("MHS 5s", "MHS av"), 0), "MHS", algoritmo)
+            cadenas.put(JSONObject()
+                .put("id", aEntero(dv.opt("Slot") ?: i))
+                .put("temp_c", tChip).put("temp_p", tPcb).put("chips", chips)
+                .put("hw", hw).put("freq", freq).put("hr", hrC))
+            if (tChip > 0) tempsMax.add(tChip)
+        }
+
+        val tm = tempsMax.maxOrNull() ?: aEntero(buscarLlave(stSum, listOf("Chip Temp Max", "Temperature"), 65))
+        val fanIn = aEntero(buscarLlave(stSum, listOf("Fan Speed In"), 0))
+        val fanOut = aEntero(buscarLlave(stSum, listOf("Fan Speed Out"), 0))
+        val ml = modeloStr.lowercase()
+        val fansStr = when {
+            fanIn > 0 || fanOut > 0 -> "$fanIn / $fanOut RPM"
+            ml.contains("m33") || ml.contains("m53") || ml.contains("m63") || ml.contains("hyd") -> "💧 Hydro (Refrigeración Líquida Activa)"
+            else -> "0 / 0 RPM"
+        }
+
+        return JSONObject()
+            .put("ip", ip).put("marca", "WhatsMiner").put("modelo", modeloStr)
+            .put("algoritmo", algoritmo).put("moneda", moneda).put("unidad", unidadHr)
+            .put("hashrate", hr5s).put("hashrate_30m", hr30m)
+            .put("temp", tm).put("temp_amb", tempAmb).put("consumo", cw.roundToInt()).put("errores", erroresHw)
+            .put("fans", fansStr).put("mac", est["mac"]).put("serial", est["serial"]).put("firmware", est["fw"])
+            .put("cadenas", cadenas).put("uptime", uptimeStr)
+            .put("hostname", est["hostname"]).put("net_proto", est["net_proto"])
+            .put("netmask", est["netmask"]).put("gateway", est["gateway"]).put("dns", est["dns"])
+            .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
+            .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
+            .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+    }
+
+    // ==================== EXTRACTOR UNIVERSAL (ANTMINER + WHATSMINER) ====================
+    private fun extraerTodo(ip: String, subnet: String): JSONObject? {
+        val summary = peticion4028(ip, "summary")
+        var stSum = JSONObject()
+        val sumArr = summary?.optJSONArray("SUMMARY")
+        if (sumArr != null && sumArr.length() > 0) {
+            stSum = sumArr.optJSONObject(0) ?: JSONObject()
+        }
+
+        if (stSum.length() > 0 && esWhatsminer(JSONObject(), stSum, summary?.optString("STATUS", "") ?: "")) {
+            return extraerWhatsminer(ip, stSum, subnet)
+        }
+
+        val stats = peticion4028(ip, "stats")
+        val st = JSONObject()
+        val statsArr = stats?.optJSONArray("STATS")
+        if (statsArr != null) {
+            for (i in 0 until statsArr.length()) {
+                val item = statsArr.optJSONObject(i) ?: continue
+                val keys = item.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    st.put(k, item.opt(k))
+                }
+            }
+        }
+
+        if ((st.length() > 0 || stSum.length() > 0) && esWhatsminer(st, stSum, "")) {
+            return extraerWhatsminer(ip, stSum, subnet)
+        }
+
+        if (st.length() == 0 && stSum.length() == 0) {
+            val rawSt = peticionHttp(ip, "stats.cgi", timeoutMs = 1800)
+            if (!rawSt.isNullOrEmpty()) {
+                try {
+                    val jSt = JSONObject(rawSt)
+                    val arr = jSt.optJSONArray("STATS")
+                    val src = if (arr != null && arr.length() > 0) arr.optJSONObject(0) ?: jSt else jSt
+                    val ks = src.keys(); while (ks.hasNext()) { val k = ks.next(); st.put(k, src.opt(k)) }
+                } catch (_: Exception) {}
+            }
+            if (st.length() == 0) {
+                val rawSum = peticionHttp(ip, "summary.cgi", timeoutMs = 1800)
+                if (!rawSum.isNullOrEmpty()) {
+                    try {
+                        val jSum = JSONObject(rawSum)
+                        val arr = jSum.optJSONArray("SUMMARY")
+                        stSum = if (arr != null && arr.length() > 0) arr.optJSONObject(0) ?: jSum else jSum
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        if (st.length() == 0 && stSum.length() == 0) return null
+
+        var modeloStr = buscarLlave(
+            st, listOf("Type", "Miner", "Model", "minertype", "Description"),
+            buscarLlave(stSum, listOf("Type", "Miner", "Description"), "")
+        ).toString().trim()
+
+        val ahora = System.currentTimeMillis() / 1000L
+        var est = cacheInfoEstatica[ip]
+        if (est == null || (ahora - ((est["ts"] as? Long) ?: 0L) > 600L)) {
+            var mac = est?.get("mac")?.toString() ?: "-"
+            var fw = est?.get("fw")?.toString() ?: "Desconocido"
+            var hostname = est?.get("hostname")?.toString() ?: "Antminer${ip.substringAfterLast(".")}"
+            var netProto = est?.get("net_proto")?.toString() ?: "Static"
+            var netmask = est?.get("netmask")?.toString() ?: "255.255.255.0"
+            var gateway = est?.get("gateway")?.toString() ?: "$subnet.1"
+            var dns = est?.get("dns")?.toString() ?: "8.8.8.8"
+
+            for (k in listOf("Firmware Version", "CompileTime", "version", "CGMiner", "SubVersion")) {
+                val v = buscarLlave(st, listOf(k), "").toString().trim()
+                if (v.isNotEmpty() && v.lowercase() != "release" && v.length > 1) {
+                    fw = v; break
+                }
+            }
+
+            val infoHttp = peticionHttp(ip, "get_system_info.cgi", timeoutMs = 1500)
+            if (!infoHttp.isNullOrEmpty()) {
+                try {
+                    val jNet = JSONObject(infoHttp)
+                    if (modeloStr.isEmpty() || modeloStr.lowercase() == "antminer") {
+                        val mHttp = buscarLlave(jNet, listOf("minertype", "model", "type"), "").toString().trim()
+                        if (mHttp.isNotEmpty()) modeloStr = mHttp
+                    }
+                    mac = buscarLlave(jNet, listOf("macaddr", "mac"), mac).toString().trim()
+                    val fwCand = buscarLlave(jNet, listOf("system_filesystem_version", "file_system_version", "firmware_type", "CompileTime"), "").toString().trim()
+                    if (fwCand.isNotEmpty() && fwCand.lowercase() != "release") fw = fwCand
+                    hostname = buscarLlave(jNet, listOf("hostname", "ipHost"), hostname).toString().trim()
+                    val pCand = buscarLlave(jNet, listOf("nettype", "conf_nettype", "ipPro"), "").toString().trim()
+                    if (pCand.isNotEmpty()) netProto = if (pCand.lowercase().contains("dhcp") || pCand == "1") "DHCP" else "Static"
+                    netmask = buscarLlave(jNet, listOf("netmask", "conf_netmask", "ipSub"), netmask).toString().trim()
+                    gateway = buscarLlave(jNet, listOf("gateway", "conf_gateway", "ipGateway"), gateway).toString().trim()
+                    dns = buscarLlave(jNet, listOf("dnsservers", "conf_dnsservers", "ipDns"), dns).toString().trim()
+                } catch (_: Exception) {}
+            }
+
+            est = mutableMapOf(
+                "ts" to ahora, "marca" to "Antminer", "modelo" to modeloStr, "mac" to mac, "fw" to fw,
+                "hostname" to hostname, "net_proto" to netProto, "netmask" to netmask, "gateway" to gateway, "dns" to dns
+            )
+            cacheInfoEstatica[ip] = est
+        }
+
+        if (modeloStr.isEmpty() && est["modelo"].toString().isNotEmpty()) modeloStr = est["modelo"].toString()
+
+        val pl = peticion4028(ip, "pools")?.optJSONArray("POOLS") ?: JSONArray()
+        fun datosPool(idx: Int): MutableList<Any> {
+            val p = if (idx < pl.length()) pl.optJSONObject(idx) else null
+            if (p != null) {
+                val url = buscarLlave(p, listOf("URL", "url"), "").toString()
+                val usr = buscarLlave(p, listOf("User", "user", "worker"), "").toString()
+                val pas = buscarLlave(p, listOf("Pass", "pass", "password"), "123").toString()
+                val stP = buscarLlave(p, listOf("Status", "status"), if (url.isNotEmpty()) "Alive" else "Dead").toString()
+                val acc = aEntero(buscarLlave(p, listOf("Accepted", "accepted", "accept"), 0))
+                val rej = aEntero(buscarLlave(p, listOf("Rejected", "rejected", "reject"), 0))
+                return mutableListOf(url, usr, pas, stP, acc, rej)
+            }
+            return mutableListOf("", "", "123", "Dead", 0, 0)
+        }
+        val p1 = datosPool(0); val p2 = datosPool(1); val p3 = datosPool(2)
+        if (((p1[4] as Int) + (p2[4] as Int) + (p3[4] as Int)) == 0) {
+            p1[4] = aEntero(buscarLlave(stSum, listOf("Accepted", "accepted"), 0))
+            p1[5] = aEntero(buscarLlave(stSum, listOf("Rejected", "rejected"), 0))
+        }
+
+        var raw5s = buscarLlave(st, listOf("GHS 5s", "rate_5s"), buscarLlave(stSum, listOf("GHS 5s", "HS 5s"), null))
+        var uDetectada = "GHS"
+        if (raw5s == null) {
+            raw5s = buscarLlave(stSum, listOf("THS 5s", "THS rt"), null)
+            if (raw5s != null) uDetectada = "THS"
+        }
+        if (raw5s == null) {
+            raw5s = buscarLlave(stSum, listOf("MHS 5s", "MHS av"), 0)
+            if (aFloat(raw5s) > 0.0) uDetectada = "MHS"
+        }
+        val rawAvg = buscarLlave(st, listOf("GHS av", "rate_avg", "rate_30m"), buscarLlave(stSum, listOf("GHS av", "THS av", "MHS av"), raw5s))
+
+        val valTest = aFloat(raw5s)
+        if (modeloStr.isEmpty() || listOf("antminer", "bmminer", "cgminer").contains(modeloStr.lowercase())) {
+            modeloStr = when {
+                valTest in 400.0..1100.0 -> "Antminer Z15 Pro"
+                valTest > 380000.0 || (uDetectada == "THS" && valTest > 380.0) -> "Antminer S23 Hyd"
+                valTest > 280000.0 || (uDetectada == "THS" && valTest > 280.0) -> "Antminer S23"
+                valTest > 180000.0 || (uDetectada == "THS" && valTest > 180.0) -> "Antminer S21+"
+                valTest > 130000.0 || (uDetectada == "THS" && valTest > 130.0) -> "Antminer S19 XP"
+                valTest > 100000.0 || (uDetectada == "THS" && valTest > 100.0) -> "Antminer S19k Pro"
+                else -> "Antminer S19"
+            }
+        }
+
+        val (algoritmo, moneda) = detectarAlgoritmoYMoneda(modeloStr, p1[0].toString())
+        val (hr5s, unidadHr) = normalizarHashrateUniversal(raw5s, uDetectada, algoritmo)
+        var (hr30m, _) = normalizarHashrateUniversal(rawAvg, uDetectada, algoritmo)
+        if (hr30m == 0.0) hr30m = hr5s
+
+        val ml = modeloStr.lowercase()
+        var chipsDef = 114
+        var efi = 17.5
+        when {
+            ml.contains("z15") -> { chipsDef = 3; efi = 3.31 }
+            ml.contains("l9") -> { chipsDef = 120; efi = 210.0 }
+            ml.contains("l7") -> { chipsDef = 120; efi = 360.0 }
+            ml.contains("ks5") -> { chipsDef = 92; efi = 150.0 }
+            ml.contains("ks3") -> { chipsDef = 92; efi = 340.0 }
+            ml.contains("s23") -> { chipsDef = 108; efi = if (ml.contains("hyd")) 11.5 else 13.5 }
+            ml.contains("s21") -> { chipsDef = 108; efi = if (ml.contains("hyd")) 16.0 else 16.5 }
+            ml.contains("s19k") -> { chipsDef = 77; efi = 23.0 }
+            ml.contains("xp") -> { chipsDef = 110; efi = if (ml.contains("hyd")) 20.8 else 21.5 }
+            ml.contains("s19") -> { chipsDef = 114; efi = 29.5 }
+        }
+
+        var cw = aFloat(buscarLlave(st, listOf("watt", "power", "chain_power", "power_consumption", "psu_power"), buscarLlave(stSum, listOf("Power", "watt", "Power Consumption"), 0)))
+        if (cw < 100.0 && hr5s > 0.0) cw = hr5s * efi else if (hr5s == 0.0) cw = 120.0
+
+        val uptimeStr = formatearUptime(buscarLlave(st, listOf("Elapsed", "uptime"), buscarLlave(stSum, listOf("Elapsed", "uptime"), 0)))
+        val erroresHw = aEntero(buscarLlave(st, listOf("Hardware Errors", "Device Hardware Errors", "hw_errors"), buscarLlave(stSum, listOf("Hardware Errors"), 0)))
+        val freqGlobal = aEntero(buscarLlave(st, listOf("frequency", "freq_avg", "freq", "total_freqavg"), 0))
+
+        val ambCandidates = mutableListOf<Int>()
+        val stKeys = st.keys()
+        while (stKeys.hasNext()) {
+            val k = stKeys.next()
+            val kl = k.lowercase()
+            if (listOf("ambient", "env_temp", "temp_in", "inlet", "water_in", "liquid_in").any { kl.contains(it) }) {
+                val va = aEnteroMin(st.opt(k))
+                if (va in 10..60) ambCandidates.add(va)
+            }
+        }
+
+        val cadenas = mutableListOf<JSONObject>()
+        val tempsMax = mutableListOf<Int>()
+
+        val sChains = st.optJSONArray("chain")
+        if (sChains != null && sChains.length() > 0) {
+            for (idx in 0 until sChains.length()) {
+                val ch = sChains.optJSONObject(idx) ?: continue
+                val tChip = aEntero(buscarLlave(ch, listOf("temp2", "temp_chip", "temp_max"), 0))
+                val rawPcb = buscarLlave(ch, listOf("temp", "temp_pcb", "temp_pic", "temp_water"), 0)
+                var tPcb = aEntero(rawPcb)
+                if (tPcb == 0 && tChip > 0) tPcb = max(0, tChip - 5)
+
+                val rawAmbCh = buscarLlave(ch, listOf("ambientemp", "ambient_temp", "env_temp", "temp_in", "water_in"), null)
+                if (rawAmbCh != null) {
+                    val vac = aEnteroMin(rawAmbCh)
+                    if (vac in 10..55) ambCandidates.add(vac)
+                } else {
+                    val numsPcb = extraerNumeros(rawPcb)
+                    if (numsPcb.size >= 2 && numsPcb.min() < (numsPcb.max() - 5) && numsPcb.min() in 15..55) {
+                        ambCandidates.add(numsPcb.min())
+                    }
+                }
+
+                var chipsNum = aEntero(buscarLlave(ch, listOf("asic_num", "chipNum", "acn", "chips", "asic"), 0))
+                val hwNum = aEntero(buscarLlave(ch, listOf("hw", "hwNum", "hw_errors"), 0))
+                val freqNum = aEntero(buscarLlave(ch, listOf("freq_avg", "freq", "frequency"), freqGlobal))
+                val rateRaw = aFloat(buscarLlave(ch, listOf("rate_real", "rate", "rate_ideal"), 0))
+                val (hrChain, _) = normalizarHashrateUniversal(rateRaw, uDetectada, algoritmo)
+
+                if (tChip > 0 || tPcb > 0 || chipsNum > 0 || hrChain > 0.0) {
+                    if (chipsNum == 0 && (tChip > 0 || hrChain > 0.0)) chipsNum = chipsDef
+                    cadenas.add(JSONObject()
+                        .put("id", cadenas.size).put("temp_c", tChip).put("temp_p", tPcb)
+                        .put("chips", chipsNum).put("hw", hwNum).put("freq", freqNum).put("hr", hrChain))
+                    if (tChip > 0) tempsMax.add(tChip)
+                }
+            }
+        }
+
+        if (cadenas.isEmpty()) {
+            for (i in 1..9) {
+                val tc = buscarLlave(st, listOf("temp2_$i", "temp3_$i", "temp_chip_$i", "temp_max_$i"))
+                val tp = buscarLlave(st, listOf("temp_$i", "temp1_$i", "temp_pcb_$i", "temp_pic_$i"))
+                val acn = buscarLlave(st, listOf("chain_acn$i", "chain acn$i", "acn$i", "acn_$i", "chain_acs$i", "chain acs$i"))
+                val hwC = buscarLlave(st, listOf("chain_hw$i", "chain hw$i", "hw$i", "hw_$i"))
+                val rtC = buscarLlave(st, listOf("chain_rate$i", "chain rate$i", "rate$i", "rate_$i"))
+                val fqC = buscarLlave(st, listOf("freq_avg$i", "freq$i", "freq_$i", "chain_freq$i"), freqGlobal)
+
+                for (rawT in listOf(tp, st.opt("temp1_$i"), st.opt("temp_in_$i"), st.opt("ambientemp_$i"))) {
+                    if (rawT != null) {
+                        val numsT = extraerNumeros(rawT)
+                        if (numsT.size >= 2 && numsT.min() < (numsT.max() - 4) && numsT.min() in 15..55) {
+                            ambCandidates.add(numsT.min())
+                        }
+                    }
+                }
+
+                val tChip = aEntero(tc)
+                var tPcb = aEntero(tp)
+                var chipsNum = aEntero(acn)
+                val hwNum = aEntero(hwC)
+                val freqNum = aEntero(fqC)
+                val (hrChain, _) = normalizarHashrateUniversal(rtC, uDetectada, algoritmo)
+
+                if (tChip > 0 || tPcb > 0 || chipsNum > 0 || hrChain > 0.0) {
+                    if (tPcb == 0 && tChip > 0) tPcb = max(0, tChip - 5)
+                    if (chipsNum == 0 && (tChip > 0 || hrChain > 0.0)) chipsNum = chipsDef
+                    cadenas.add(JSONObject()
+                        .put("id", cadenas.size).put("temp_c", tChip).put("temp_p", tPcb)
+                        .put("chips", chipsNum).put("hw", hwNum).put("freq", freqNum).put("hr", hrChain))
+                    if (tChip > 0) tempsMax.add(tChip)
+                }
+            }
+        }
+
+        if (cadenas.isEmpty()) {
+            val tFb = aEntero(st.opt("temp_max") ?: 65)
+            val numPlacas = if (ml.contains("z15") || ml.contains("l7") || ml.contains("l9")) 4 else 3
+            val hrDiv = round2(hr5s / numPlacas.toDouble())
+            for (pIdx in 0 until numPlacas) {
+                cadenas.add(JSONObject()
+                    .put("id", pIdx).put("temp_c", tFb).put("temp_p", max(0, tFb - 5))
+                    .put("chips", chipsDef).put("hw", 0).put("freq", freqGlobal).put("hr", hrDiv))
+            }
+            tempsMax.add(tFb)
+        }
+
+        val sumaHw = cadenas.sumOf { it.optInt("hw", 0) }
+        if (sumaHw == 0 && erroresHw > 0 && cadenas.isNotEmpty()) cadenas[0].put("hw", erroresHw)
+        for (c in cadenas) {
+            if (c.optDouble("hr", 0.0) == 0.0 && hr5s > 0.0) {
+                c.put("hr", round2(hr5s / cadenas.size.toDouble()))
+            }
+        }
+
+        val cadenasArr = JSONArray()
+        for (c in cadenas) cadenasArr.put(c)
+
+        val tm = tempsMax.maxOrNull() ?: 65
+        val tempAmb = ambCandidates.maxOrNull() ?: 0
+
+        val fans = listOf("fan1", "fan2", "fan3", "fan4")
+            .mapNotNull { st.opt(it)?.toString() }
+            .filter { aEntero(it) > 0 }
+        val esHydro = ml.contains("hyd") || ml.contains("hydro") || ml.contains("water")
+        val fansStr = when {
+            fans.isNotEmpty() && !esHydro -> fans.joinToString(" / ") + " RPM"
+            esHydro || (fans.isEmpty() && hr5s > 0.0) -> {
+                if (tempAmb > 0) "💧 Hydro (Entrada ${tempAmb}°C / Salida ${max(tempAmb + 5, tm - 12)}°C)"
+                else "💧 Hydro (Refrigeración Líquida Activa)"
+            }
+            else -> "0 / 0 RPM"
+        }
+
+        return JSONObject()
+            .put("ip", ip).put("marca", "Antminer").put("modelo", modeloStr)
+            .put("algoritmo", algoritmo).put("moneda", moneda).put("unidad", unidadHr)
+            .put("hashrate", hr5s).put("hashrate_30m", hr30m)
+            .put("temp", tm).put("temp_amb", tempAmb).put("consumo", cw.roundToInt()).put("errores", erroresHw)
+            .put("fans", fansStr).put("mac", est["mac"]).put("serial", st.optString("Hash Board SN", "SN-${ip.replace(".", "")}"))
+            .put("firmware", est["fw"]).put("cadenas", cadenasArr).put("uptime", uptimeStr)
+            .put("hostname", est["hostname"]).put("net_proto", est["net_proto"])
+            .put("netmask", est["netmask"]).put("gateway", est["gateway"]).put("dns", est["dns"])
+            .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
+            .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
+            .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+    }
+
+    // ==================== ESCANEO DE RED ====================
+    private suspend fun escanearRed(subnet: String, ipsBase: List<String>): List<String> = coroutineScope {
+        val encontradas = ipsBase.toMutableList()
+        val probadas = (2..254).map { i ->
             async(Dispatchers.IO) {
                 val ip = "$subnet.$i"
                 try {
-                    Socket().use { s ->
-                        s.connect(InetSocketAddress(ip, 4028), 350)
-                        ip
-                    }
+                    Socket().use { s -> s.connect(InetSocketAddress(ip, 4028), 450) }
+                    ip
                 } catch (_: Exception) { null }
             }
+        }.awaitAll().filterNotNull()
+
+        for (ip in probadas) {
+            if (!encontradas.contains(ip)) encontradas.add(ip)
         }
-        tareas.awaitAll().filterNotNull().forEach { encontradas.add(it) }
         encontradas
     }
 
-    private fun peticion4028(ip: String, comando: String): JSONObject? {
-        return try {
-            Socket().use { s ->
-                s.connect(InetSocketAddress(ip, 4028), 2000)
-                s.soTimeout = 2000
-                s.getOutputStream().write("{\"command\":\"$comando\"}".toByteArray())
-                val txt = s.getInputStream().bufferedReader().readText().replace("\u0000", "").trim()
-                if (txt.isEmpty()) null else JSONObject(txt.replace("}{", ","))
-            }
-        } catch (_: Exception) { null }
-    }
+    // ==================== COMANDOS REMOTOS COMPLETOS ====================
+    private fun actualizarConfigSegura(ipDest: String, nuevosCampos: JSONObject) {
+        val confActual = try {
+            val raw = peticionHttp(ipDest, "get_miner_conf.cgi", "GET", timeoutMs = 3000)
+            if (!raw.isNullOrEmpty()) JSONObject(raw) else JSONObject()
+        } catch (_: Exception) { JSONObject() }
 
-    private fun leerMinero4028(ip: String): JSONObject? {
-        val sum = peticion4028(ip, "summary") ?: return null
-        val stSum = sum.optJSONArray("SUMMARY")?.optJSONObject(0) ?: return null
-        val stats = peticion4028(ip, "stats")
-        val stStats = stats?.optJSONArray("STATS")?.optJSONObject(1)
-            ?: stats?.optJSONArray("STATS")?.optJSONObject(0) ?: JSONObject()
-
-        val ghs5s = stSum.optDouble("GHS 5s", stSum.optDouble("MHS 5s", 0.0) / 1000.0)
-        val ghsAv = stSum.optDouble("GHS av", stSum.optDouble("MHS av", ghs5s * 1000.0) / 1000.0)
-        val hrTh = Math.round((ghs5s / 1000.0) * 100.0) / 100.0
-        val hr30Th = Math.round((ghsAv / 1000.0) * 100.0) / 100.0
-
-        val tempMax = maxOf(
-            stStats.optInt("temp2_1", 0),
-            stStats.optInt("temp2_2", 0),
-            stStats.optInt("temp2_3", 0),
-            stSum.optInt("Chip Temp Max", 65)
-        )
-
-        val pools = peticion4028(ip, "pools")?.optJSONArray("POOLS")
-        val p1 = pools?.optJSONObject(0)
-
-        return JSONObject().apply {
-            put("ip", ip)
-            put("modelo", stStats.optString("Type", "ASIC Miner"))
-            put("algoritmo", "SHA-256")
-            put("moneda", "BTC")
-            put("unidad", "TH/s")
-            put("hashrate", hrTh)
-            put("hashrate_30m", if (hr30Th > 0) hr30Th else hrTh)
-            put("temp", tempMax)
-            put("temp_amb", stSum.optInt("Env Temp", 0))
-            put("consumo", if (hrTh > 0) hrTh * 23.0 else 120.0)
-            put("errores", stSum.optInt("Hardware Errors", 0))
-            put("pool1", p1?.optString("URL", "") ?: "")
-            put("worker1", p1?.optString("User", "") ?: "")
-            put("acc1", p1?.optInt("Accepted", 0) ?: 0)
-            put("rej1", p1?.optInt("Rejected", 0) ?: 0)
-            put("cadenas", JSONArray())
+        val ks = nuevosCampos.keys()
+        while (ks.hasNext()) {
+            val k = ks.next()
+            confActual.put(k, nuevosCampos.opt(k))
         }
+        peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = confActual, timeoutMs = 4500)
     }
 
-    private suspend fun procesarOrdenes(ordenes: JSONArray, subnet: String) {
+    private suspend fun procesarComandos(ordenes: JSONArray, apiKey: String, subnet: String, ipsBase: List<String>) {
         for (i in 0 until ordenes.length()) {
-            val o = ordenes.optJSONObject(i) ?: continue
-            val ip = o.optString("ip")
-            val cmd = o.optString("comando")
-            when (cmd) {
-                "scan" -> ipsConocidas = escanearRed(subnet)
-                "restart" -> peticion4028(ip, "restart")
-                "sleep" -> peticion4028(ip, "pause")
-                "normal" -> peticion4028(ip, "resume")
+            val cmd = ordenes.optJSONObject(i) ?: continue
+            val accion = cmd.optString("comando", "")
+            val ipDest = cmd.optString("ip", "")
+            val esWm = cacheInfoEstatica[ipDest]?.get("marca") == "WhatsMiner"
+
+            when {
+                accion == "scan" -> {
+                    val enc = escanearRed(subnet, ipsBase)
+                    ipsConocidas.clear()
+                    ipsConocidas.addAll(enc)
+                }
+                accion == "restart" -> {
+                    if (esWm) {
+                        peticion4028(ipDest, "reboot")
+                        peticion4028(ipDest, "restart_btminer")
+                    } else {
+                        peticionHttp(ipDest, "reboot.cgi", timeoutMs = 4000)
+                        peticion4028(ipDest, "restart")
+                    }
+                }
+                accion == "reset" && !esWm -> {
+                    for (ep in listOf("reset_conf.cgi", "factory_reset.cgi", "reset.cgi")) {
+                        peticionHttp(ipDest, ep, "POST_EMPTY", timeoutMs = 4000)
+                        peticionHttp(ipDest, ep, "GET", timeoutMs = 4000)
+                    }
+                    val poolsVacias = JSONArray()
+                        .put(JSONObject().put("url", "").put("user", "").put("pass", ""))
+                        .put(JSONObject().put("url", "").put("user", "").put("pass", ""))
+                        .put(JSONObject().put("url", "").put("user", "").put("pass", ""))
+                    val defPayload = JSONObject()
+                        .put("pools", poolsVacias)
+                        .put("bitmain-work-mode", "0")
+                        .put("bitmain-fan-ctrl", false)
+                        .put("bitmain-fan-pwm", "100")
+                    peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = defPayload, timeoutMs = 4000)
+                    peticion4028(ipDest, "removepool", "0")
+                    peticion4028(ipDest, "removepool", "1")
+                    peticion4028(ipDest, "removepool", "2")
+                    delay(3000)
+                    peticionHttp(ipDest, "reboot.cgi", "GET", timeoutMs = 4000)
+                }
+                accion == "sleep" -> {
+                    if (esWm) peticion4028(ipDest, "power_off")
+                    else {
+                        actualizarConfigSegura(ipDest, JSONObject().put("bitmain-work-mode", "1").put("miner-mode", 1))
+                        peticion4028(ipDest, "pause")
+                    }
+                }
+                accion == "normal" -> {
+                    if (esWm) peticion4028(ipDest, "power_on")
+                    else {
+                        actualizarConfigSegura(ipDest, JSONObject().put("bitmain-work-mode", "0").put("miner-mode", 0))
+                        peticion4028(ipDest, "resume")
+                    }
+                }
+                accion == "blink" -> {
+                    if (esWm) peticion4028(ipDest, "set_led")
+                    else peticionHttp(ipDest, "blink.cgi", "POST", payloadJson = JSONObject().put("blink", "true"), timeoutMs = 3000)
+                }
+                accion.startsWith("profile|") -> {
+                    val modo = accion.substringAfter("|").lowercase()
+                    if (esWm) peticion4028(ipDest, if (modo.contains("low")) "set_low_power" else "set_normal_power")
+                    else {
+                        val valModo = if (modo.contains("low")) "2" else "0"
+                        actualizarConfigSegura(ipDest, JSONObject().put("bitmain-work-mode", valModo).put("miner-mode", valModo.toInt()))
+                    }
+                }
+                accion.startsWith("set_network|") && !esWm -> {
+                    val p = accion.split("|")
+                    if (p.size >= 7) {
+                        val jNet = JSONObject()
+                            .put("ipHost", p[1]).put("ipPro", p[2].toIntOrNull() ?: 2)
+                            .put("ipAddress", p[3]).put("ipSub", p[4]).put("ipGateway", p[5]).put("ipDns", p[6])
+                        val fNet = mapOf(
+                            "_ant_conf_hostname" to p[1],
+                            "_ant_conf_nettype" to if (p[2] == "1") "DHCP" else "Static",
+                            "_ant_conf_ipaddress" to p[3],
+                            "_ant_conf_netmask" to p[4],
+                            "_ant_conf_gateway" to p[5],
+                            "_ant_conf_dnsservers" to p[6]
+                        )
+                        peticionHttp(ipDest, "set_network_conf.cgi", "POST", payloadJson = jNet, timeoutMs = 4000)
+                        peticionHttp(ipDest, "set_network_conf.cgi", "POST_FORM", payloadForm = fNet, timeoutMs = 4000)
+                        if (p[3].isNotEmpty() && !ipsConocidas.contains(p[3])) ipsConocidas.add(p[3])
+                    }
+                }
+                accion.startsWith("guardar_pools|") && !esWm -> {
+                    val p = accion.split("|")
+                    if (p.size >= 10) {
+                        val poolsArr = JSONArray()
+                            .put(JSONObject().put("url", p[1]).put("user", p[2]).put("pass", p[3]))
+                            .put(JSONObject().put("url", p[4]).put("user", p[5]).put("pass", p[6]))
+                            .put(JSONObject().put("url", p[7]).put("user", p[8]).put("pass", p[9]))
+                        actualizarConfigSegura(ipDest, JSONObject().put("pools", poolsArr))
+                        val fPools = mapOf(
+                            "_ant_pool1url" to p[1], "_ant_pool1user" to p[2], "_ant_pool1pw" to p[3],
+                            "_ant_pool2url" to p[4], "_ant_pool2user" to p[5], "_ant_pool2pw" to p[6],
+                            "_ant_pool3url" to p[7], "_ant_pool3user" to p[8], "_ant_pool3pw" to p[9]
+                        )
+                        peticionHttp(ipDest, "set_miner_conf.cgi", "POST_FORM", payloadForm = fPools, timeoutMs = 4000)
+                    }
+                }
+                accion in listOf("get_log", "clog", "hlog", "dlog") && !esWm -> {
+                    val ep = if (accion == "get_log") "log.cgi" else "$accion.cgi"
+                    var logTxt = peticionHttp(ipDest, ep, timeoutMs = 4000)
+                    if (logTxt.isNullOrEmpty() && accion == "get_log") {
+                        logTxt = peticionHttp(ipDest, "get_kernel_log.cgi", timeoutMs = 4000)
+                    }
+                    if (!logTxt.isNullOrEmpty()) {
+                        postJsonNube(urlLogs, JSONObject().put("api_key", apiKey).put("ip", ipDest).put("log", logTxt))
+                    }
+                }
             }
         }
     }
 
-    private fun enviarPostJson(urlStr: String, body: String): JSONObject? {
+    private fun postJsonNube(urlStr: String, body: JSONObject): JSONObject? {
         return try {
             val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = 10000
-                readTimeout = 10000
+                readTimeout = 15000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
             }
-            OutputStreamWriter(conn.outputStream).use { it.write(body) }
-            if (conn.responseCode == 200) {
-                JSONObject(conn.inputStream.bufferedReader().readText())
+            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            if (conn.responseCode in 200..299) {
+                val txt = conn.inputStream.bufferedReader().readText()
+                try { JSONObject(txt) } catch (_: Exception) { JSONObject() }
             } else null
-        } catch (_: Exception) { null }
-    }
-
-    private fun crearCanalNotificacion() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canal = NotificationChannel("emg_ch", "El Minero Gris 24/7", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(canal)
+        } catch (_: Exception) {
+            null
         }
     }
-
-    private fun construirNotificacion(texto: String): Notification {
-        return NotificationCompat.Builder(this, "emg_ch")
-            .setContentTitle("El Minero Gris — Agente")
-            .setContentText(texto)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOngoing(true)
-            .build()
-    }
-
-    private fun actualizarNotificacion(texto: String) {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(101, construirNotificacion(texto))
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
-    override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
 }
