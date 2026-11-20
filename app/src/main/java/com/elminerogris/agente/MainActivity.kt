@@ -3,6 +3,7 @@ package com.elminerogris.agente
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -28,12 +29,13 @@ import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val urlPanel = "https://antminer-panel.onrender.com"
-    private val urlLogin = "https://antminer-panel.onrender.com/api/agente/login"
-    private val urlVersion = "https://antminer-panel.onrender.com/api/agente/apk_version"
+    private val urlPanel = "https://elminerogris.com"
+    private val urlLogin = "https://elminerogris.com/api/agente/login"
+    private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
     private var apkUpdateUrl = ""
 
     private lateinit var txtEstado: TextView
@@ -45,6 +47,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+        obtenerOCrearAgentId(prefs)
+
         val dp = resources.displayMetrics.density
         fun Int.dp(): Int = (this * dp).toInt()
 
@@ -321,6 +325,14 @@ class MainActivity : AppCompatActivity() {
         verificarBateriaUI()
     }
 
+    private fun obtenerOCrearAgentId(prefs: SharedPreferences): String {
+        val existente = prefs.getString("agent_id", "")?.trim() ?: ""
+        if (existente.length >= 4) return existente
+        val nuevoId = "AND-" + UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
+        prefs.edit().putString("agent_id", nuevoId).apply()
+        return nuevoId
+    }
+
     private fun solicitarPermisosNecesarios() {
         val permisos = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -364,6 +376,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
         val user = prefs.getString("username", "") ?: ""
         val apiKey = prefs.getString("api_key", "") ?: ""
+        val agentId = obtenerOCrearAgentId(prefs)
         val subnet = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
         val running = prefs.getBoolean("service_running", false)
         val count = prefs.getInt("miners_count", 0)
@@ -375,7 +388,7 @@ class MainActivity : AppCompatActivity() {
             apiKey.isNotEmpty() -> "🟡 Sesión lista ($user) — Detenido"
             else -> "Inicia sesión para vincular esta granja"
         }
-        txtResumenLive.text = "Subred: $subnet.x  •  ASICs: $count\nÚlt. envío: $lastSync\nUbicación: $gpsStatus"
+        txtResumenLive.text = "Sede: $agentId  •  ASICs: $count\nSubred: $subnet.x  •  Envío: $lastSync\nUbicación: $gpsStatus"
     }
 
     private fun verificarActualizacion(manual: Boolean) {
