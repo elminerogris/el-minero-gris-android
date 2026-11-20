@@ -1,15 +1,20 @@
 package com.elminerogris.agente
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -22,8 +27,12 @@ import java.net.Socket
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -48,7 +57,14 @@ class AgentService : Service() {
     private val cacheInfoEstatica = ConcurrentHashMap<String, MutableMap<String, Any>>()
     private var ultimoEscaneoAuto = 0L
 
+    // Caché de GPS real (se refresca al iniciar y cada 6 horas)
+    private var ultimaLecturaGps = 0L
+    private var gpsLat: Double? = null
+    private var gpsLon: Double? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("service_running", true).apply()
         adquirirLocks()
         startForeground(1, crearNotificacion("Monitoreando granja ASIC 24/7..."))
         scope.coroutineContext.cancelChildren()
@@ -59,6 +75,8 @@ class AgentService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("service_running", false).apply()
         scope.cancel()
         liberarLocks()
         super.onDestroy()
@@ -110,13 +128,61 @@ class AgentService : Service() {
         return builder
             .setContentTitle("El Minero Gris Agente")
             .setContentText(texto)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .build()
     }
 
     private fun actualizarNotificacion(texto: String) {
         val nm = getSystemService(NotificationManager::class.java)
         nm?.notify(1, crearNotificacion(texto))
+    }
+
+    // ==================== LECTURA DE GPS REAL (SIN GASTAR BATERÍA) ====================
+    private fun actualizarGpsSiCorresponde(prefs: android.content.SharedPreferences) {
+        val ahora = System.currentTimeMillis() / 1000L
+        if (gpsLat != null && gpsLon != null && (ahora - ultimaLecturaGps) < 21600L) {
+            return
+        }
+
+        val fineOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineOk && !coarseOk) {
+            prefs.edit().putString("gps_status", "Sin permiso GPS (usando IP)").apply()
+            return
+        }
+
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+            val proveedores = listOf(
+                LocationManager.GPS_PROVIDER,
+                LocationManager.NETWORK_PROVIDER,
+                LocationManager.PASSIVE_PROVIDER
+            )
+            var mejor: Location? = null
+            for (prov in proveedores) {
+                try {
+                    val loc = lm.getLastKnownLocation(prov) ?: continue
+                    if (abs(loc.latitude) < 0.001 && abs(loc.longitude) < 0.001) continue
+                    if (mejor == null || loc.accuracy < mejor.accuracy) {
+                        mejor = loc
+                    }
+                } catch (_: SecurityException) {
+                } catch (_: Exception) {
+                }
+            }
+
+            if (mejor != null) {
+                gpsLat = (mejor.latitude * 1_000_000.0).roundToInt() / 1_000_000.0
+                gpsLon = (mejor.longitude * 1_000_000.0).roundToInt() / 1_000_000.0
+                ultimaLecturaGps = ahora
+                val latTxt = String.format(Locale.US, "%.4f", gpsLat)
+                val lonTxt = String.format(Locale.US, "%.4f", gpsLon)
+                prefs.edit().putString("gps_status", "🛰️ GPS APK ($latTxt, $lonTxt)").apply()
+            } else {
+                prefs.edit().putString("gps_status", "Esperando señal GPS (usando IP)").apply()
+            }
+        } catch (_: Exception) {
+        }
     }
 
     private suspend fun buclePrincipal() {
@@ -129,8 +195,12 @@ class AgentService : Service() {
         ipsConocidas.clear()
         ipsConocidas.addAll(ipsBase)
 
+        val fmtHora = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
         while (currentCoroutineContext().isActive) {
             try {
+                actualizarGpsSiCorresponde(prefs)
+
                 val ahora = System.currentTimeMillis() / 1000L
                 if (ahora - ultimoEscaneoAuto > 600L) {
                     ultimoEscaneoAuto = ahora
@@ -159,8 +229,19 @@ class AgentService : Service() {
                     .put("api_key", apiKey)
                     .put("mineros", arrMineros)
 
+                if (gpsLat != null && gpsLon != null) {
+                    payload.put("lat", gpsLat)
+                    payload.put("lon", gpsLon)
+                    payload.put("geo_source", "GPS APK")
+                }
+
                 val resp = postJsonNube(urlNube, payload)
                 if (resp != null) {
+                    val horaStr = fmtHora.format(Date())
+                    prefs.edit()
+                        .putInt("miners_count", resultados.size)
+                        .putString("last_sync", horaStr)
+                        .apply()
                     actualizarNotificacion("En línea: ${resultados.size} minero(s) | Subred $subnet.x")
                     val ordenes = resp.optJSONArray("ordenes")
                     if (ordenes != null && ordenes.length() > 0) {
@@ -253,7 +334,6 @@ class AgentService : Service() {
 
         for ((usr, pwd) in credencialesHttp) {
             try {
-                // 1. Primera petición para obtener el reto WWW-Authenticate (401)
                 val conn1 = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     requestMethod = httpMethod
                     connectTimeout = timeoutMs
@@ -275,7 +355,6 @@ class AgentService : Service() {
                 val wwwAuth = conn1.getHeaderField("WWW-Authenticate") ?: break
                 if (!wwwAuth.lowercase().startsWith("digest")) break
 
-                // 2. Calcular respuesta Digest Auth (RFC 2617)
                 val d = parseDigestHeader(wwwAuth)
                 val realm = d["realm"] ?: ""
                 val nonce = d["nonce"] ?: ""
