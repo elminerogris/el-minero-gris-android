@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
@@ -30,6 +31,7 @@ import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
@@ -38,8 +40,8 @@ import kotlin.math.roundToInt
 
 class AgentService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val urlNube = "https://antminer-panel.onrender.com/api/recibir_datos"
-    private val urlLogs = "https://antminer-panel.onrender.com/api/recibir_logs"
+    private val urlNube = "https://elminerogris.com/api/recibir_datos"
+    private val urlLogs = "https://elminerogris.com/api/recibir_logs"
 
     // Semáforo estricto: máximo 15 conexiones simultáneas para no saturar Wi-Fi ni celulares antiguos
     private val netSemaphore = Semaphore(15)
@@ -80,6 +82,14 @@ class AgentService : Service() {
         scope.cancel()
         liberarLocks()
         super.onDestroy()
+    }
+
+    private fun obtenerOCrearAgentId(prefs: SharedPreferences): String {
+        val existente = prefs.getString("agent_id", "")?.trim() ?: ""
+        if (existente.length >= 4) return existente
+        val nuevoId = "AND-" + UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
+        prefs.edit().putString("agent_id", nuevoId).apply()
+        return nuevoId
     }
 
     private fun adquirirLocks() {
@@ -138,7 +148,7 @@ class AgentService : Service() {
     }
 
     // ==================== LECTURA DE GPS REAL (SIN GASTAR BATERÍA) ====================
-    private fun actualizarGpsSiCorresponde(prefs: android.content.SharedPreferences) {
+    private fun actualizarGpsSiCorresponde(prefs: SharedPreferences) {
         val ahora = System.currentTimeMillis() / 1000L
         if (gpsLat != null && gpsLon != null && (ahora - ultimaLecturaGps) < 21600L) {
             return
@@ -189,6 +199,7 @@ class AgentService : Service() {
         val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("api_key", "") ?: ""
         val subnet = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
+        val agentId = obtenerOCrearAgentId(prefs)
         if (apiKey.isEmpty()) return
 
         val ipsBase = (11..15).map { "$subnet.$it" }
@@ -227,6 +238,7 @@ class AgentService : Service() {
 
                 val payload = JSONObject()
                     .put("api_key", apiKey)
+                    .put("agent_id", agentId)
                     .put("mineros", arrMineros)
 
                 if (gpsLat != null && gpsLon != null) {
@@ -242,7 +254,7 @@ class AgentService : Service() {
                         .putInt("miners_count", resultados.size)
                         .putString("last_sync", horaStr)
                         .apply()
-                    actualizarNotificacion("En línea: ${resultados.size} minero(s) | Subred $subnet.x")
+                    actualizarNotificacion("En línea: ${resultados.size} minero(s) | Sede $agentId")
                     val ordenes = resp.optJSONArray("ordenes")
                     if (ordenes != null && ordenes.length() > 0) {
                         procesarComandos(ordenes, apiKey, subnet, ipsBase)
