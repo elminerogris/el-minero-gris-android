@@ -40,24 +40,24 @@ class MainActivity : AppCompatActivity() {
     private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
     private var apkUpdateUrl = ""
     private var mostrandoFormularioLogin = false
+    private var actualizandoSwitchInterno = false
 
-    // Banner principal de estado
     private lateinit var cardBanner: LinearLayout
     private lateinit var txtBadgeEstado: TextView
     private lateinit var txtDescEstado: TextView
 
-    // Métricas en vivo (2x2)
     private lateinit var valAsics: TextView
     private lateinit var valSync: TextView
     private lateinit var valSede: TextView
     private lateinit var valSubred: TextView
 
-    // Checklist de salud
     private lateinit var txtCheckWifi: TextView
-    private lateinit var txtCheckGps: TextView
     private lateinit var txtCheckBateria: TextView
 
-    // Controles de sesión / acción
+    // Clima / GPS opcional
+    private lateinit var switchClima: Switch
+    private lateinit var txtEstadoClima: TextView
+
     private lateinit var cardLoginForm: LinearLayout
     private lateinit var cardAccionRapida: LinearLayout
     private lateinit var txtCuentaGuardada: TextView
@@ -220,7 +220,7 @@ class MainActivity : AppCompatActivity() {
         row2.addView(boxSubred)
         root.addView(row2)
 
-        // ==================== 4. CONTROL PRINCIPAL (ACCION RAPIDA / DETENER) ====================
+        // ==================== 4. CONTROL PRINCIPAL ====================
         cardAccionRapida = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#111624", 12, "#232B42")
@@ -353,7 +353,7 @@ class MainActivity : AppCompatActivity() {
         cardLoginForm.addView(btnConectarLogin)
         root.addView(cardLoginForm)
 
-        // ==================== 6. CHECKLIST DE SALUD (PARA PRINCIPIANTES) ====================
+        // ==================== 6. CHECKLIST DE SALUD ====================
         val cardSalud = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#111624", 12, "#232B42")
@@ -376,21 +376,69 @@ class MainActivity : AppCompatActivity() {
             textSize = 12.5f
             setPadding(0, 5.dp(), 0, 5.dp())
         }
-        txtCheckGps = TextView(this).apply {
-            textSize = 12.5f
-            setPadding(0, 5.dp(), 0, 5.dp())
-        }
         txtCheckBateria = TextView(this).apply {
             textSize = 12.5f
             setPadding(0, 5.dp(), 0, 2.dp())
         }
 
         cardSalud.addView(txtCheckWifi)
-        cardSalud.addView(txtCheckGps)
         cardSalud.addView(txtCheckBateria)
         root.addView(cardSalud)
 
-        // ==================== 7. ACCESOS RÁPIDOS ====================
+        // ==================== 7. TARJETA OPCIONAL: CLIMA EXACTO ====================
+        val cardClima = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#111624", 12, "#232B42")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 14.dp() }
+        }
+
+        val filaClimaHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val tituloClima = TextView(this).apply {
+            text = "🌤️  Clima exacto de tus ASICs"
+            textSize = 13.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        switchClima = Switch(this).apply {
+            isChecked = prefs.getBoolean("gps_enabled", false)
+        }
+
+        filaClimaHeader.addView(tituloClima)
+        filaClimaHeader.addView(switchClima)
+
+        val descClima = TextView(this).apply {
+            text = "Opcional: activa el GPS para medir la temperatura exterior exacta de tu granja y mejorar la protección térmica automática."
+            textSize = 11.8f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, 6.dp(), 0, 4.dp())
+        }
+
+        txtEstadoClima = TextView(this).apply {
+            textSize = 11.5f
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, 2.dp(), 0, 0)
+        }
+
+        cardClima.addView(filaClimaHeader)
+        cardClima.addView(descClima)
+        cardClima.addView(txtEstadoClima)
+        root.addView(cardClima)
+
+        // ==================== 8. ACCESOS RÁPIDOS ====================
         val btnAbrirWeb = Button(this).apply {
             text = "🌐   Abrir Panel Web (elminerogris.com)"
             isAllCaps = false
@@ -423,6 +471,27 @@ class MainActivity : AppCompatActivity() {
         setContentView(scroll)
 
         // ==================== EVENTOS ====================
+        switchClima.setOnCheckedChangeListener { _, isChecked ->
+            if (actualizandoSwitchInterno) return@setOnCheckedChangeListener
+            if (isChecked) {
+                val tienePerm = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                if (tienePerm) {
+                    prefs.edit().putBoolean("gps_enabled", true).apply()
+                    actualizarTodoUI()
+                } else {
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                        102
+                    )
+                }
+            } else {
+                prefs.edit().putBoolean("gps_enabled", false).apply()
+                actualizarTodoUI()
+            }
+        }
+
         btnConectarLogin.setOnClickListener {
             val u = inpUser.text.toString().trim()
             val p = inpPass.text.toString()
@@ -479,9 +548,6 @@ class MainActivity : AppCompatActivity() {
         txtCheckWifi.setOnClickListener {
             startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
         }
-        txtCheckGps.setOnClickListener {
-            solicitarPermisosNecesarios()
-        }
         txtCheckBateria.setOnClickListener {
             pedirIgnorarBateria()
         }
@@ -499,9 +565,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        solicitarPermisosNecesarios()
+        solicitarPermisoNotificaciones()
         actualizarTodoUI()
         verificarActualizacion(manual = false)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 102) {
+            val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+            val concedido = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+            prefs.edit().putBoolean("gps_enabled", concedido).apply()
+            actualizandoSwitchInterno = true
+            switchClima.isChecked = concedido
+            actualizandoSwitchInterno = false
+            actualizarTodoUI()
+        }
     }
 
     override fun onResume() {
@@ -535,7 +614,7 @@ class MainActivity : AppCompatActivity() {
         val running = prefs.getBoolean("service_running", false)
         val count = prefs.getInt("miners_count", 0)
         val lastSync = prefs.getString("last_sync", "Esperando...") ?: "Esperando..."
-        val gpsStatus = prefs.getString("gps_status", "Esperando GPS...") ?: "Esperando GPS..."
+        val gpsActivo = prefs.getBoolean("gps_enabled", false)
 
         val dp = resources.displayMetrics.density
         fun fondoBanner(bg: String, border: String): GradientDrawable {
@@ -546,7 +625,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 1. Banner de estado (imposible confundirse)
         when {
             running && apiKey.isNotEmpty() -> {
                 cardBanner.background = fondoBanner("#092418", "#10B981")
@@ -568,14 +646,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 2. Métricas 2x2
         valAsics.text = "$count"
         valAsics.setTextColor(if (count > 0 && running) Color.parseColor("#34D399") else Color.WHITE)
         valSync.text = if (running) lastSync else "Pausado"
         valSede.text = agentId
         valSubred.text = "${subnetWifi ?: subnetGuardada}.x"
 
-        // 3. Visibilidad inteligente de Login vs Control Activo
         val tieneSesion = apiKey.isNotEmpty() && !mostrandoFormularioLogin
         if (tieneSesion) {
             cardLoginForm.visibility = View.GONE
@@ -595,22 +671,12 @@ class MainActivity : AppCompatActivity() {
             cardAccionRapida.visibility = View.GONE
         }
 
-        // 4. Checklist de salud
         if (subnetWifi != null) {
             txtCheckWifi.text = "✅  Wi-Fi local conectado ($subnetWifi.x)"
             txtCheckWifi.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             txtCheckWifi.text = "⚠️  Sin Wi-Fi — Conéctate al router de tu granja"
             txtCheckWifi.setTextColor(Color.parseColor("#FCD34D"))
-        }
-
-        val gpsPermOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (gpsPermOk) {
-            txtCheckGps.text = "✅  Ubicación: $gpsStatus"
-            txtCheckGps.setTextColor(Color.parseColor("#6EE7B7"))
-        } else {
-            txtCheckGps.text = "⚠️  GPS sin permiso — Toca aquí para activar"
-            txtCheckGps.setTextColor(Color.parseColor("#FCD34D"))
         }
 
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -621,6 +687,17 @@ class MainActivity : AppCompatActivity() {
         } else {
             txtCheckBateria.text = "⚠️  Ahorro de batería activo — Toca para permitir 24/7"
             txtCheckBateria.setTextColor(Color.parseColor("#FCD34D"))
+        }
+
+        actualizandoSwitchInterno = true
+        switchClima.isChecked = gpsActivo
+        actualizandoSwitchInterno = false
+        if (gpsActivo) {
+            txtEstadoClima.text = "● Activo — Usando ubicación precisa para el clima exterior"
+            txtEstadoClima.setTextColor(Color.parseColor("#34D399"))
+        } else {
+            txtEstadoClima.text = "○ Desactivado — Usando clima aproximado por ciudad"
+            txtEstadoClima.setTextColor(Color.parseColor("#64748B"))
         }
     }
 
@@ -645,19 +722,11 @@ class MainActivity : AppCompatActivity() {
         return nuevoId
     }
 
-    private fun solicitarPermisosNecesarios() {
-        val permisos = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
+    private fun solicitarPermisoNotificaciones() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permisos.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        val faltantes = permisos.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (faltantes.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, faltantes.toTypedArray(), 101)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
         }
     }
 
