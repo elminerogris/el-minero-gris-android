@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -16,11 +17,14 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -42,8 +46,8 @@ class AgentService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val urlNube = "https://elminerogris.com/api/recibir_datos"
     private val urlLogs = "https://elminerogris.com/api/recibir_logs"
+    private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
 
-    // Semáforo estricto: máximo 15 conexiones simultáneas para no saturar Wi-Fi ni celulares antiguos
     private val netSemaphore = Semaphore(15)
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -58,8 +62,8 @@ class AgentService : Service() {
     private val ipsConocidas = CopyOnWriteArrayList<String>()
     private val cacheInfoEstatica = ConcurrentHashMap<String, MutableMap<String, Any>>()
     private var ultimoEscaneoAuto = 0L
+    private var ultimoCheckUpdate = 0L
 
-    // Caché de GPS real (se refresca al iniciar y cada 6 horas)
     private var ultimaLecturaGps = 0L
     private var gpsLat: Double? = null
     private var gpsLon: Double? = null
@@ -147,52 +151,115 @@ class AgentService : Service() {
         nm?.notify(1, crearNotificacion(texto))
     }
 
-    // ==================== LECTURA DE GPS REAL (SIN GASTAR BATERÍA) ====================
+    // ==================== GPS OPCIONAL (SOLO SI EL CLIENTE LO ACTIVA) ====================
     private fun actualizarGpsSiCorresponde(prefs: SharedPreferences) {
-        val ahora = System.currentTimeMillis() / 1000L
-        if (gpsLat != null && gpsLon != null && (ahora - ultimaLecturaGps) < 21600L) {
+        if (!prefs.getBoolean("gps_enabled", false)) {
+            gpsLat = null
+            gpsLon = null
             return
         }
+        val ahora = System.currentTimeMillis() / 1000L
+        if (gpsLat != null && gpsLon != null && (ahora - ultimaLecturaGps) < 21600L) return
 
         val fineOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val coarseOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!fineOk && !coarseOk) {
-            prefs.edit().putString("gps_status", "Sin permiso GPS (usando IP)").apply()
-            return
-        }
+        if (!fineOk && !coarseOk) return
 
         try {
             val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
-            val proveedores = listOf(
-                LocationManager.GPS_PROVIDER,
-                LocationManager.NETWORK_PROVIDER,
-                LocationManager.PASSIVE_PROVIDER
-            )
             var mejor: Location? = null
-            for (prov in proveedores) {
+            for (prov in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
                 try {
                     val loc = lm.getLastKnownLocation(prov) ?: continue
                     if (abs(loc.latitude) < 0.001 && abs(loc.longitude) < 0.001) continue
-                    if (mejor == null || loc.accuracy < mejor.accuracy) {
-                        mejor = loc
-                    }
-                } catch (_: SecurityException) {
-                } catch (_: Exception) {
-                }
+                    if (mejor == null || loc.accuracy < mejor.accuracy) mejor = loc
+                } catch (_: Exception) {}
             }
-
             if (mejor != null) {
                 gpsLat = (mejor.latitude * 1_000_000.0).roundToInt() / 1_000_000.0
                 gpsLon = (mejor.longitude * 1_000_000.0).roundToInt() / 1_000_000.0
                 ultimaLecturaGps = ahora
-                val latTxt = String.format(Locale.US, "%.4f", gpsLat)
-                val lonTxt = String.format(Locale.US, "%.4f", gpsLon)
-                prefs.edit().putString("gps_status", "🛰️ GPS APK ($latTxt, $lonTxt)").apply()
-            } else {
-                prefs.edit().putString("gps_status", "Esperando señal GPS (usando IP)").apply()
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
+    }
+
+    // ==================== AUTO-ACTUALIZACIÓN EN SEGUNDO PLANO ====================
+    private fun verificarYDescargarUpdate(forzar: Boolean = false) {
+        val ahora = System.currentTimeMillis() / 1000L
+        if (!forzar && (ahora - ultimoCheckUpdate) < 21600L) return
+        ultimoCheckUpdate = ahora
+
+        try {
+            val conn = (URL(urlVersion).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+            }
+            if (conn.responseCode != 200) return
+            val info = JSONObject(conn.inputStream.bufferedReader().readText())
+            val nubeCode = info.optInt("version_code", 1)
+            val nubeName = info.optString("version_name", "1.0")
+            val apkUrl = info.optString("apk_url", "")
+            if (apkUrl.isEmpty()) return
+
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val localCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode
+            }
+            if (nubeCode <= localCode) return
+
+            val dlConn = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 30000
+            }
+            if (dlConn.responseCode != 200) return
+            val outFile = File(cacheDir, "ElMineroGris-Update.apk")
+            dlConn.inputStream.use { input ->
+                FileOutputStream(outFile).use { output -> input.copyTo(output) }
+            }
+            mostrarNotificacionUpdate(outFile, nubeName)
+        } catch (_: Exception) {}
+    }
+
+    private fun mostrarNotificacionUpdate(file: File, versionName: String) {
+        try {
+            val channelId = "emg_update_channel"
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ch = NotificationChannel(channelId, "Actualizaciones El Minero Gris", NotificationManager.IMPORTANCE_HIGH)
+                nm.createNotificationChannel(ch)
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getActivity(this, 202, installIntent, flags)
+
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, channelId)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+            val notif = builder
+                .setContentTitle("⬆️ Actualización v$versionName lista")
+                .setContentText("Toca aquí para instalar la nueva versión del Agente")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(2, notif)
+        } catch (_: Exception) {}
     }
 
     private suspend fun buclePrincipal() {
@@ -210,6 +277,7 @@ class AgentService : Service() {
 
         while (currentCoroutineContext().isActive) {
             try {
+                verificarYDescargarUpdate(forzar = false)
                 actualizarGpsSiCorresponde(prefs)
 
                 val ahora = System.currentTimeMillis() / 1000L
@@ -993,6 +1061,9 @@ class AgentService : Service() {
             val esWm = cacheInfoEstatica[ipDest]?.get("marca") == "WhatsMiner"
 
             when {
+                accion == "update_apk" -> {
+                    verificarYDescargarUpdate(forzar = true)
+                }
                 accion == "scan" -> {
                     val enc = escanearRed(subnet, ipsBase)
                     ipsConocidas.clear()
