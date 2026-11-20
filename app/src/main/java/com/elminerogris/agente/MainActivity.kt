@@ -33,14 +33,41 @@ import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var liveRefreshJob: Job? = null
+
     private val urlPanel = "https://elminerogris.com"
     private val urlLogin = "https://elminerogris.com/api/agente/login"
     private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
     private var apkUpdateUrl = ""
+    private var mostrandoFormularioLogin = false
 
-    private lateinit var txtEstado: TextView
-    private lateinit var txtResumenLive: TextView
-    private lateinit var btnBateria: Button
+    // Banner principal de estado
+    private lateinit var cardBanner: LinearLayout
+    private lateinit var txtBadgeEstado: TextView
+    private lateinit var txtDescEstado: TextView
+
+    // Métricas en vivo (2x2)
+    private lateinit var valAsics: TextView
+    private lateinit var valSync: TextView
+    private lateinit var valSede: TextView
+    private lateinit var valSubred: TextView
+
+    // Checklist de salud
+    private lateinit var txtCheckWifi: TextView
+    private lateinit var txtCheckGps: TextView
+    private lateinit var txtCheckBateria: TextView
+
+    // Controles de sesión / acción
+    private lateinit var cardLoginForm: LinearLayout
+    private lateinit var cardAccionRapida: LinearLayout
+    private lateinit var txtCuentaGuardada: TextView
+    private lateinit var inpUser: EditText
+    private lateinit var inpPass: EditText
+    private lateinit var txtErrorLogin: TextView
+    private lateinit var btnConectarLogin: Button
+    private lateinit var btnIniciarRapido: Button
+    private lateinit var btnDetener: Button
+    private lateinit var btnCambiarCuenta: TextView
     private lateinit var btnActualizar: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,87 +79,208 @@ class MainActivity : AppCompatActivity() {
         val dp = resources.displayMetrics.density
         fun Int.dp(): Int = (this * dp).toInt()
 
-        fun crearFondo(colorHex: String, radioDp: Int = 12, bordeHex: String? = null): GradientDrawable {
+        fun fondo(colorHex: String, radioDp: Int = 12, bordeHex: String? = null, grosorDp: Int = 1): GradientDrawable {
             return GradientDrawable().apply {
                 setColor(Color.parseColor(colorHex))
                 cornerRadius = radioDp.dp().toFloat()
-                if (bordeHex != null) setStroke(1.dp(), Color.parseColor(bordeHex))
+                if (bordeHex != null) setStroke(grosorDp.dp(), Color.parseColor(bordeHex))
             }
         }
 
+        fun crearCajaMetrica(etiqueta: String): Pair<LinearLayout, TextView> {
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = fondo("#111624", 10, "#232B42")
+                setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val lbl = TextView(this).apply {
+                text = etiqueta
+                textSize = 11f
+                setTextColor(Color.parseColor("#94A3B8"))
+                setTypeface(null, Typeface.BOLD)
+            }
+            val valor = TextView(this).apply {
+                text = "-"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.MONOSPACE
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(0, 4.dp(), 0, 0)
+            }
+            box.addView(lbl)
+            box.addView(valor)
+            return Pair(box, valor)
+        }
+
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.parseColor("#0B0D14"))
+            setBackgroundColor(Color.parseColor("#0A0C12"))
             isFillViewport = true
         }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(20.dp(), 28.dp(), 20.dp(), 28.dp())
-            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(18.dp(), 22.dp(), 18.dp(), 28.dp())
         }
 
-        // --- CABECERA CON TU LOGO ---
-        val imgLogo = ImageView(this).apply {
-            setImageResource(R.mipmap.ic_launcher)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = crearFondo("#151926", 20, "#2B3553")
-            clipToOutline = true
-            setPadding(4.dp(), 4.dp(), 4.dp(), 4.dp())
-            layoutParams = LinearLayout.LayoutParams(88.dp(), 88.dp()).apply {
-                bottomMargin = 12.dp()
-            }
-        }
-
-        val pInfo = packageManager.getPackageInfo(packageName, 0)
-        val versionLocalName = pInfo.versionName ?: "1.0"
-
-        val titulo = TextView(this).apply {
-            text = "El Minero Gris"
-            textSize = 23f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
-
-        val subtitulo = TextView(this).apply {
-            text = "Agente Local 24/7  •  v$versionLocalName"
-            textSize = 13f
-            setTextColor(Color.parseColor("#94A3B8"))
-            gravity = Gravity.CENTER
-            setPadding(0, 2.dp(), 0, 18.dp())
-        }
-
-        // --- TARJETA DE ESTADO EN VIVO ---
-        val cardLive = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = crearFondo("#131724", 12, "#242C44")
-            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+        // ==================== 1. CABECERA CON LOGO ====================
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = 16.dp() }
         }
 
-        txtEstado = TextView(this).apply {
-            textSize = 14f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#38BDF8"))
+        val imgLogo = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = fondo("#151926", 14, "#2B3553")
+            clipToOutline = true
+            setPadding(2.dp(), 2.dp(), 2.dp(), 2.dp())
+            layoutParams = LinearLayout.LayoutParams(52.dp(), 52.dp()).apply {
+                rightMargin = 12.dp()
+            }
         }
 
-        txtResumenLive = TextView(this).apply {
+        val pInfo = packageManager.getPackageInfo(packageName, 0)
+        val versionLocalName = pInfo.versionName ?: "1.0"
+
+        val headerTxt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        headerTxt.addView(TextView(this).apply {
+            text = "El Minero Gris"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        })
+        headerTxt.addView(TextView(this).apply {
+            text = "Puente Local de Granja 24/7  •  v$versionLocalName"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+        })
+
+        header.addView(imgLogo)
+        header.addView(headerTxt)
+        root.addView(header)
+
+        // ==================== 2. BANNER PRINCIPAL DE ESTADO ====================
+        cardBanner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 14.dp() }
+        }
+
+        txtBadgeEstado = TextView(this).apply {
+            textSize = 15.5f
+            setTypeface(null, Typeface.BOLD)
+        }
+        txtDescEstado = TextView(this).apply {
             textSize = 12.5f
             setTextColor(Color.parseColor("#CBD5E1"))
-            setPadding(0, 6.dp(), 0, 0)
-            typeface = Typeface.MONOSPACE
+            setPadding(0, 5.dp(), 0, 0)
+        }
+        cardBanner.addView(txtBadgeEstado)
+        cardBanner.addView(txtDescEstado)
+        root.addView(cardBanner)
+
+        // ==================== 3. MÉTRICAS EN VIVO (2x2) ====================
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 8.dp() }
+        }
+        val (boxAsics, vAsics) = crearCajaMetrica("ASICs DETECTADOS")
+        val (boxSync, vSync) = crearCajaMetrica("ÚLTIMO ENVÍO")
+        valAsics = vAsics
+        valSync = vSync
+        (boxAsics.layoutParams as LinearLayout.LayoutParams).rightMargin = 8.dp()
+        row1.addView(boxAsics)
+        row1.addView(boxSync)
+        root.addView(row1)
+
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 14.dp() }
+        }
+        val (boxSede, vSede) = crearCajaMetrica("ID DE SEDE")
+        val (boxSubred, vSubred) = crearCajaMetrica("RED LOCAL (WI-FI)")
+        valSede = vSede
+        valSubred = vSubred
+        (boxSede.layoutParams as LinearLayout.LayoutParams).rightMargin = 8.dp()
+        row2.addView(boxSede)
+        row2.addView(boxSubred)
+        root.addView(row2)
+
+        // ==================== 4. CONTROL PRINCIPAL (ACCION RAPIDA / DETENER) ====================
+        cardAccionRapida = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#111624", 12, "#232B42")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 14.dp() }
         }
 
-        cardLive.addView(txtEstado)
-        cardLive.addView(txtResumenLive)
+        txtCuentaGuardada = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.parseColor("#CBD5E1"))
+            setPadding(0, 0, 0, 10.dp())
+        }
 
-        // --- TARJETA DE ACCESO ---
-        val cardLogin = LinearLayout(this).apply {
+        btnIniciarRapido = Button(this).apply {
+            text = "▶   INICIAR MONITOREO 24/7"
+            isAllCaps = false
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            background = fondo("#2563EB", 10)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                50.dp()
+            )
+        }
+
+        btnDetener = Button(this).apply {
+            text = "⏹   DETENER AGENTE"
+            isAllCaps = false
+            textSize = 14.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#FECACA"))
+            background = fondo("#3B1219", 10, "#EF4444")
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                48.dp()
+            )
+        }
+
+        btnCambiarCuenta = TextView(this).apply {
+            text = "Cambiar cuenta o contraseña"
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#60A5FA"))
+            gravity = Gravity.CENTER
+            setPadding(0, 12.dp(), 0, 2.dp())
+        }
+
+        cardAccionRapida.addView(txtCuentaGuardada)
+        cardAccionRapida.addView(btnIniciarRapido)
+        cardAccionRapida.addView(btnDetener)
+        cardAccionRapida.addView(btnCambiarCuenta)
+        root.addView(cardAccionRapida)
+
+        // ==================== 5. FORMULARIO DE INICIO DE SESIÓN ====================
+        cardLoginForm = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = crearFondo("#131724", 12, "#242C44")
+            background = fondo("#111624", 12, "#232B42")
             setPadding(16.dp(), 16.dp(), 16.dp(), 16.dp())
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -140,12 +288,25 @@ class MainActivity : AppCompatActivity() {
             ).apply { bottomMargin = 14.dp() }
         }
 
-        val inpUser = EditText(this).apply {
+        cardLoginForm.addView(TextView(this).apply {
+            text = "Vincular tu cuenta"
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        })
+        cardLoginForm.addView(TextView(this).apply {
+            text = "Usa el mismo usuario y contraseña con los que entras a elminerogris.com"
+            textSize = 12f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, 3.dp(), 0, 12.dp())
+        })
+
+        inpUser = EditText(this).apply {
             hint = "Usuario o correo"
             setText(prefs.getString("username", ""))
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#64748B"))
-            background = crearFondo("#0B0D14", 8, "#29324D")
+            background = fondo("#0A0C12", 8, "#29324D")
             setPadding(12.dp(), 12.dp(), 12.dp(), 12.dp())
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -153,106 +314,130 @@ class MainActivity : AppCompatActivity() {
             ).apply { bottomMargin = 10.dp() }
         }
 
-        val inpPass = EditText(this).apply {
+        inpPass = EditText(this).apply {
             hint = "Contraseña"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#64748B"))
-            background = crearFondo("#0B0D14", 8, "#29324D")
+            background = fondo("#0A0C12", 8, "#29324D")
             setPadding(12.dp(), 12.dp(), 12.dp(), 12.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 10.dp() }
+        }
+
+        txtErrorLogin = TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#F87171"))
+            setPadding(0, 0, 0, 10.dp())
+            visibility = View.GONE
+        }
+
+        btnConectarLogin = Button(this).apply {
+            text = "🔐   Conectar e Iniciar Agente"
+            isAllCaps = false
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            background = fondo("#2563EB", 10)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                50.dp()
+            )
+        }
+
+        cardLoginForm.addView(inpUser)
+        cardLoginForm.addView(inpPass)
+        cardLoginForm.addView(txtErrorLogin)
+        cardLoginForm.addView(btnConectarLogin)
+        root.addView(cardLoginForm)
+
+        // ==================== 6. CHECKLIST DE SALUD (PARA PRINCIPIANTES) ====================
+        val cardSalud = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#111624", 12, "#232B42")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = 14.dp() }
         }
 
-        val btnIniciar = Button(this).apply {
-            text = "▶  Iniciar Agente 24/7"
-            isAllCaps = false
-            textSize = 15f
+        cardSalud.addView(TextView(this).apply {
+            text = "Estado del teléfono (toca para corregir)"
+            textSize = 13f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
-            background = crearFondo("#2563EB", 10)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                48.dp()
-            ).apply { bottomMargin = 10.dp() }
+            setPadding(0, 0, 0, 8.dp())
+        })
+
+        txtCheckWifi = TextView(this).apply {
+            textSize = 12.5f
+            setPadding(0, 5.dp(), 0, 5.dp())
+        }
+        txtCheckGps = TextView(this).apply {
+            textSize = 12.5f
+            setPadding(0, 5.dp(), 0, 5.dp())
+        }
+        txtCheckBateria = TextView(this).apply {
+            textSize = 12.5f
+            setPadding(0, 5.dp(), 0, 2.dp())
         }
 
-        val btnDetener = Button(this).apply {
-            text = "⏹  Detener Agente"
-            isAllCaps = false
-            textSize = 14f
-            setTextColor(Color.parseColor("#E2E8F0"))
-            background = crearFondo("#1E2436", 10, "#334155")
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                44.dp()
-            )
-        }
+        cardSalud.addView(txtCheckWifi)
+        cardSalud.addView(txtCheckGps)
+        cardSalud.addView(txtCheckBateria)
+        root.addView(cardSalud)
 
-        cardLogin.addView(inpUser)
-        cardLogin.addView(inpPass)
-        cardLogin.addView(btnIniciar)
-        cardLogin.addView(btnDetener)
-
-        // --- BOTONES DE UTILIDAD ---
+        // ==================== 7. ACCESOS RÁPIDOS ====================
         val btnAbrirWeb = Button(this).apply {
-            text = "🌐  Abrir Panel Web"
+            text = "🌐   Abrir Panel Web (elminerogris.com)"
             isAllCaps = false
             textSize = 14f
+            setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#93C5FD"))
-            background = crearFondo("#131B2E", 10, "#1D4ED8")
+            background = fondo("#111A2E", 10, "#1D4ED8")
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                44.dp()
+                46.dp()
             ).apply { bottomMargin = 10.dp() }
-        }
-
-        btnBateria = Button(this).apply {
-            text = "🔋  Desactivar ahorro de batería (24/7)"
-            isAllCaps = false
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#FDE68A"))
-            background = crearFondo("#241C0F", 10, "#B45309")
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                44.dp()
-            ).apply { bottomMargin = 10.dp() }
-            visibility = View.GONE
         }
 
         btnActualizar = Button(this).apply {
-            text = "🔄  Buscar actualizaciones"
+            text = "🔄   Buscar actualizaciones de la app"
             isAllCaps = false
-            textSize = 14f
+            textSize = 13.5f
             setTextColor(Color.parseColor("#6EE7B7"))
-            background = crearFondo("#0F241D", 10, "#059669")
+            background = fondo("#0E221B", 10, "#059669")
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 44.dp()
             )
         }
 
-        // --- EVENTOS ---
-        btnIniciar.setOnClickListener {
+        root.addView(btnAbrirWeb)
+        root.addView(btnActualizar)
+
+        scroll.addView(root)
+        setContentView(scroll)
+
+        // ==================== EVENTOS ====================
+        btnConectarLogin.setOnClickListener {
             val u = inpUser.text.toString().trim()
             val p = inpPass.text.toString()
-            val apiGuardada = prefs.getString("api_key", "") ?: ""
-
-            if (p.isEmpty() && apiGuardada.isNotEmpty() && u == prefs.getString("username", "")) {
-                iniciarServicio()
-                actualizarEstadoUI()
-                return@setOnClickListener
-            }
-
             if (u.isEmpty() || p.isEmpty()) {
-                txtEstado.text = "⚠️ Completa usuario y contraseña"
+                txtErrorLogin.text = "⚠️ Escribe tu usuario y contraseña"
+                txtErrorLogin.visibility = View.VISIBLE
                 return@setOnClickListener
             }
-            txtEstado.text = "⏳ Conectando con El Minero Gris..."
+            txtErrorLogin.visibility = View.GONE
+            btnConectarLogin.isEnabled = false
+            btnConectarLogin.text = "⏳ Conectando..."
             scope.launch {
                 val res = withContext(Dispatchers.IO) { hacerLogin(u, p) }
+                btnConectarLogin.isEnabled = true
+                btnConectarLogin.text = "🔐   Conectar e Iniciar Agente"
                 if (res != null && res.optBoolean("ok", false)) {
                     val subWifi = detectarSubredWifi() ?: res.optString("subnet", "192.168.0")
                     prefs.edit()
@@ -261,37 +446,48 @@ class MainActivity : AppCompatActivity() {
                         .putString("subnet", subWifi)
                         .putBoolean("service_running", true)
                         .apply()
+                    mostrandoFormularioLogin = false
                     iniciarServicio()
-                    txtEstado.text = "🟢 Agente activo 24/7"
-                    actualizarEstadoUI()
+                    actualizarTodoUI()
                 } else {
-                    txtEstado.text = "❌ ${res?.optString("msg") ?: "Error de conexión"}"
+                    txtErrorLogin.text = "❌ ${res?.optString("msg") ?: "No se pudo conectar con elminerogris.com"}"
+                    txtErrorLogin.visibility = View.VISIBLE
                 }
             }
+        }
+
+        btnIniciarRapido.setOnClickListener {
+            val subWifi = detectarSubredWifi()
+            val ed = prefs.edit().putBoolean("service_running", true)
+            if (subWifi != null) ed.putString("subnet", subWifi)
+            ed.apply()
+            iniciarServicio()
+            actualizarTodoUI()
         }
 
         btnDetener.setOnClickListener {
             stopService(Intent(this, AgentService::class.java))
             prefs.edit().putBoolean("service_running", false).apply()
-            txtEstado.text = "⏸ Agente detenido"
-            actualizarEstadoUI()
+            actualizarTodoUI()
+        }
+
+        btnCambiarCuenta.setOnClickListener {
+            mostrandoFormularioLogin = true
+            actualizarTodoUI()
+        }
+
+        txtCheckWifi.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+        }
+        txtCheckGps.setOnClickListener {
+            solicitarPermisosNecesarios()
+        }
+        txtCheckBateria.setOnClickListener {
+            pedirIgnorarBateria()
         }
 
         btnAbrirWeb.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlPanel)))
-        }
-
-        btnBateria.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                } catch (_: Exception) {
-                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                }
-            }
         }
 
         btnActualizar.setOnClickListener {
@@ -303,26 +499,142 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        root.addView(imgLogo)
-        root.addView(titulo)
-        root.addView(subtitulo)
-        root.addView(cardLive)
-        root.addView(cardLogin)
-        root.addView(btnAbrirWeb)
-        root.addView(btnBateria)
-        root.addView(btnActualizar)
-        scroll.addView(root)
-        setContentView(scroll)
-
         solicitarPermisosNecesarios()
-        actualizarEstadoUI()
+        actualizarTodoUI()
         verificarActualizacion(manual = false)
     }
 
     override fun onResume() {
         super.onResume()
-        actualizarEstadoUI()
-        verificarBateriaUI()
+        actualizarTodoUI()
+        iniciarRefrescoEnVivo()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        liveRefreshJob?.cancel()
+    }
+
+    private fun iniciarRefrescoEnVivo() {
+        liveRefreshJob?.cancel()
+        liveRefreshJob = scope.launch {
+            while (isActive) {
+                actualizarTodoUI()
+                delay(3000L)
+            }
+        }
+    }
+
+    private fun actualizarTodoUI() {
+        val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+        val user = prefs.getString("username", "") ?: ""
+        val apiKey = prefs.getString("api_key", "") ?: ""
+        val agentId = obtenerOCrearAgentId(prefs)
+        val subnetGuardada = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
+        val subnetWifi = detectarSubredWifi()
+        val running = prefs.getBoolean("service_running", false)
+        val count = prefs.getInt("miners_count", 0)
+        val lastSync = prefs.getString("last_sync", "Esperando...") ?: "Esperando..."
+        val gpsStatus = prefs.getString("gps_status", "Esperando GPS...") ?: "Esperando GPS..."
+
+        val dp = resources.displayMetrics.density
+        fun fondoBanner(bg: String, border: String): GradientDrawable {
+            return GradientDrawable().apply {
+                setColor(Color.parseColor(bg))
+                cornerRadius = 12 * dp
+                setStroke((1.5f * dp).toInt(), Color.parseColor(border))
+            }
+        }
+
+        // 1. Banner de estado (imposible confundirse)
+        when {
+            running && apiKey.isNotEmpty() -> {
+                cardBanner.background = fondoBanner("#092418", "#10B981")
+                txtBadgeEstado.text = "●  AGENTE ACTIVO 24/7"
+                txtBadgeEstado.setTextColor(Color.parseColor("#34D399"))
+                txtDescEstado.text = "Conectado como $user. Enviando datos a elminerogris.com en segundo plano. Puedes minimizar esta app o apagar la pantalla."
+            }
+            apiKey.isNotEmpty() -> {
+                cardBanner.background = fondoBanner("#241B0A", "#F59E0B")
+                txtBadgeEstado.text = "●  AGENTE DETENIDO"
+                txtBadgeEstado.setTextColor(Color.parseColor("#FBBF24"))
+                txtDescEstado.text = "Tu cuenta ($user) está lista, pero el monitoreo está pausado. Pulsa Iniciar para comenzar."
+            }
+            else -> {
+                cardBanner.background = fondoBanner("#151B2E", "#3B82F6")
+                txtBadgeEstado.text = "●  LISTO PARA CONFIGURAR"
+                txtBadgeEstado.setTextColor(Color.parseColor("#60A5FA"))
+                txtDescEstado.text = "Esta app conecta los ASICs de tu red Wi-Fi local con tu panel en elminerogris.com."
+            }
+        }
+
+        // 2. Métricas 2x2
+        valAsics.text = "$count"
+        valAsics.setTextColor(if (count > 0 && running) Color.parseColor("#34D399") else Color.WHITE)
+        valSync.text = if (running) lastSync else "Pausado"
+        valSede.text = agentId
+        valSubred.text = "${subnetWifi ?: subnetGuardada}.x"
+
+        // 3. Visibilidad inteligente de Login vs Control Activo
+        val tieneSesion = apiKey.isNotEmpty() && !mostrandoFormularioLogin
+        if (tieneSesion) {
+            cardLoginForm.visibility = View.GONE
+            cardAccionRapida.visibility = View.VISIBLE
+            txtCuentaGuardada.text = "👤 Cuenta vinculada: $user"
+            if (running) {
+                btnIniciarRapido.visibility = View.GONE
+                btnDetener.visibility = View.VISIBLE
+                btnCambiarCuenta.visibility = View.GONE
+            } else {
+                btnIniciarRapido.visibility = View.VISIBLE
+                btnDetener.visibility = View.GONE
+                btnCambiarCuenta.visibility = View.VISIBLE
+            }
+        } else {
+            cardLoginForm.visibility = View.VISIBLE
+            cardAccionRapida.visibility = View.GONE
+        }
+
+        // 4. Checklist de salud
+        if (subnetWifi != null) {
+            txtCheckWifi.text = "✅  Wi-Fi local conectado ($subnetWifi.x)"
+            txtCheckWifi.setTextColor(Color.parseColor("#6EE7B7"))
+        } else {
+            txtCheckWifi.text = "⚠️  Sin Wi-Fi — Conéctate al router de tu granja"
+            txtCheckWifi.setTextColor(Color.parseColor("#FCD34D"))
+        }
+
+        val gpsPermOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (gpsPermOk) {
+            txtCheckGps.text = "✅  Ubicación: $gpsStatus"
+            txtCheckGps.setTextColor(Color.parseColor("#6EE7B7"))
+        } else {
+            txtCheckGps.text = "⚠️  GPS sin permiso — Toca aquí para activar"
+            txtCheckGps.setTextColor(Color.parseColor("#FCD34D"))
+        }
+
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val batOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || pm?.isIgnoringBatteryOptimizations(packageName) == true
+        if (batOk) {
+            txtCheckBateria.text = "✅  Batería 24/7: Sin restricciones de Android"
+            txtCheckBateria.setTextColor(Color.parseColor("#6EE7B7"))
+        } else {
+            txtCheckBateria.text = "⚠️  Ahorro de batería activo — Toca para permitir 24/7"
+            txtCheckBateria.setTextColor(Color.parseColor("#FCD34D"))
+        }
+    }
+
+    private fun pedirIgnorarBateria() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
     }
 
     private fun obtenerOCrearAgentId(prefs: SharedPreferences): String {
@@ -349,14 +661,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun verificarBateriaUI() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-            val ignorando = pm?.isIgnoringBatteryOptimizations(packageName) == true
-            btnBateria.visibility = if (ignorando) View.GONE else View.VISIBLE
-        }
-    }
-
     private fun detectarSubredWifi(): String? {
         return try {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
@@ -372,30 +676,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun actualizarEstadoUI() {
-        val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
-        val user = prefs.getString("username", "") ?: ""
-        val apiKey = prefs.getString("api_key", "") ?: ""
-        val agentId = obtenerOCrearAgentId(prefs)
-        val subnet = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
-        val running = prefs.getBoolean("service_running", false)
-        val count = prefs.getInt("miners_count", 0)
-        val lastSync = prefs.getString("last_sync", "Sin sincronizar") ?: "Sin sincronizar"
-        val gpsStatus = prefs.getString("gps_status", "Esperando GPS...") ?: "Esperando GPS..."
-
-        txtEstado.text = when {
-            running && apiKey.isNotEmpty() -> "🟢 Agente activo 24/7 ($user)"
-            apiKey.isNotEmpty() -> "🟡 Sesión lista ($user) — Detenido"
-            else -> "Inicia sesión para vincular esta granja"
-        }
-        txtResumenLive.text = "Sede: $agentId  •  ASICs: $count\nSubred: $subnet.x  •  Envío: $lastSync\nUbicación: $gpsStatus"
-    }
-
     private fun verificarActualizacion(manual: Boolean) {
         scope.launch {
             val info = withContext(Dispatchers.IO) { obtenerVersionNube() }
             if (info == null) {
-                if (manual) btnActualizar.text = "🔄  Buscar actualizaciones"
+                if (manual) btnActualizar.text = "🔄   Buscar actualizaciones de la app"
                 return@launch
             }
             val nubeCode = info.optInt("version_code", 1)
@@ -412,25 +697,25 @@ class MainActivity : AppCompatActivity() {
 
             if (nubeCode > localCode && apkUrl.isNotEmpty()) {
                 apkUpdateUrl = apkUrl
-                btnActualizar.text = "⬆️  Descargar actualización v$nubeName"
+                btnActualizar.text = "⬆️   Descargar nueva versión v$nubeName"
             } else if (manual) {
-                btnActualizar.text = "✅  App al día (v$nubeName)"
+                btnActualizar.text = "✅   App actualizada (v$nubeName)"
                 delay(2500)
-                btnActualizar.text = "🔄  Buscar actualizaciones"
+                btnActualizar.text = "🔄   Buscar actualizaciones de la app"
             }
         }
     }
 
     private fun descargarEInstalar() {
         btnActualizar.isEnabled = false
-        btnActualizar.text = "⬇️  Descargando APK..."
+        btnActualizar.text = "⬇️   Descargando APK..."
         scope.launch {
             val archivoApk = withContext(Dispatchers.IO) { descargarApk(apkUpdateUrl) }
             if (archivoApk != null) {
-                btnActualizar.text = "✅  Abriendo instalador..."
+                btnActualizar.text = "✅   Abriendo instalador..."
                 instalarApk(archivoApk)
             } else {
-                btnActualizar.text = "❌  Error descargando — Reintentar"
+                btnActualizar.text = "❌   Error descargando — Toca para reintentar"
             }
             btnActualizar.isEnabled = true
         }
@@ -494,5 +779,9 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        liveRefreshJob?.cancel()
+        scope.cancel()
+        super.onDestroy()
+    }
 }
