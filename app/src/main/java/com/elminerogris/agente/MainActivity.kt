@@ -7,10 +7,14 @@ import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -18,6 +22,8 @@ import java.net.URL
 class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val urlLogin = "https://antminer-panel.onrender.com/api/agente/login"
+    private val urlVersion = "https://antminer-panel.onrender.com/api/agente/apk_version"
+    private var apkUpdateUrl = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,6 +79,13 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
         }
 
+        val btnActualizar = Button(this).apply {
+            text = "⬆️ Nueva versión disponible — Actualizar"
+            setBackgroundColor(Color.parseColor("#00C853"))
+            setTextColor(Color.WHITE)
+            visibility = View.GONE
+        }
+
         btnIniciar.setOnClickListener {
             val u = inpUser.text.toString().trim()
             val p = inpPass.text.toString()
@@ -102,13 +115,91 @@ class MainActivity : AppCompatActivity() {
             txtEstado.text = "⏸ Agente detenido"
         }
 
+        btnActualizar.setOnClickListener {
+            if (apkUpdateUrl.isEmpty()) return@setOnClickListener
+            btnActualizar.isEnabled = false
+            txtEstado.text = "⬇️ Descargando actualización..."
+            scope.launch {
+                val archivoApk = withContext(Dispatchers.IO) { descargarApk(apkUpdateUrl) }
+                if (archivoApk != null) {
+                    txtEstado.text = "✅ Descarga lista. Abriendo instalador..."
+                    instalarApk(archivoApk)
+                } else {
+                    txtEstado.text = "❌ Error descargando actualización"
+                    btnActualizar.isEnabled = true
+                }
+            }
+        }
+
         layout.addView(titulo)
         layout.addView(inpUser)
         layout.addView(inpPass)
         layout.addView(txtEstado)
         layout.addView(btnIniciar)
         layout.addView(btnDetener)
+        layout.addView(btnActualizar)
         setContentView(layout)
+
+        verificarActualizacion(btnActualizar)
+    }
+
+    private fun verificarActualizacion(btnActualizar: Button) {
+        scope.launch {
+            val info = withContext(Dispatchers.IO) { obtenerVersionNube() } ?: return@launch
+            val nubeCode = info.optInt("version_code", 1)
+            val nubeName = info.optString("version_name", "1.0")
+            val apkUrl = info.optString("apk_url", "")
+
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val localCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pInfo.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode
+            }
+
+            if (nubeCode > localCode && apkUrl.isNotEmpty()) {
+                apkUpdateUrl = apkUrl
+                btnActualizar.text = "⬆️ Actualizar a v$nubeName"
+                btnActualizar.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun obtenerVersionNube(): JSONObject? {
+        return try {
+            val conn = (URL(urlVersion).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+            }
+            if (conn.responseCode == 200) JSONObject(conn.inputStream.bufferedReader().readText()) else null
+        } catch (_: Exception) { null }
+    }
+
+    private fun descargarApk(urlStr: String): File? {
+        return try {
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 30000
+            }
+            if (conn.responseCode != 200) return null
+            val outFile = File(cacheDir, "ElMineroGris-Update.apk")
+            conn.inputStream.use { input ->
+                FileOutputStream(outFile).use { output -> input.copyTo(output) }
+            }
+            outFile
+        } catch (_: Exception) { null }
+    }
+
+    private fun instalarApk(file: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun iniciarServicio() {
