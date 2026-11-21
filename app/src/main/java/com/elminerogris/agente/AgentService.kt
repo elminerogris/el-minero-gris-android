@@ -8,11 +8,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -130,6 +132,61 @@ class AgentService : Service() {
     private fun liberarLocks() {
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
         try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) {}
+    }
+
+    // ==================== TELEMETRÍA DEL CELULAR (BATERÍA / CARGA / TEMP) ====================
+    private fun obtenerTelemetriaCelular(): JSONObject {
+        val info = JSONObject()
+        try {
+            val battIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (battIntent != null) {
+                val level = battIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = battIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                val pct = if (level >= 0 && scale > 0) ((level * 100f) / scale).roundToInt() else -1
+
+                val status = battIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                val cargando = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == BatteryManager.BATTERY_STATUS_FULL
+
+                val tempDecimas = battIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
+                val tempC = if (tempDecimas > 0) (tempDecimas / 10.0) else 0.0
+
+                info.put("battery_pct", pct)
+                info.put("charging", cargando)
+                info.put("battery_temp_c", tempC)
+            }
+            info.put("model", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
+            info.put("android", Build.VERSION.RELEASE ?: "")
+        } catch (_: Exception) {}
+        return info
+    }
+
+    // ==================== DIAGNÓSTICO DE LATENCIA A POOLS ====================
+    private fun diagnosticoRedPools(): String {
+        val destinos = listOf(
+            Triple("ViaBTC (BTC)", "btc.viabtc.io", 3333),
+            Triple("Binance Pool", "sha256.poolbinance.com", 8888),
+            Triple("NiceHash (SHA256)", "sha256asicboost.auto.nicehash.com", 9200),
+            Triple("Braiins Pool", "stratum.braiins.com", 3333),
+            Triple("F2Pool", "btc.f2pool.com", 3333),
+            Triple("Google DNS", "8.8.8.8", 53)
+        )
+        val sb = StringBuilder()
+        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        sb.append("=== DIAGNÓSTICO DE RED DESDE APK (${fmt.format(Date())}) ===\n")
+        for ((nombre, host, puerto) in destinos) {
+            val t0 = System.currentTimeMillis()
+            val res = try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress(host, puerto), 3000)
+                }
+                "${System.currentTimeMillis() - t0} ms (OK)"
+            } catch (e: Exception) {
+                "SIN RESPUESTA (${e.javaClass.simpleName})"
+            }
+            sb.append(String.format("%-22s -> %s:%d | %s\n", nombre, host, puerto, res))
+        }
+        return sb.toString()
     }
 
     private fun crearNotificacion(texto: String): Notification {
@@ -320,6 +377,7 @@ class AgentService : Service() {
                     .put("api_key", apiKey)
                     .put("agent_id", agentId)
                     .put("mineros", arrMineros)
+                    .put("phone", obtenerTelemetriaCelular())
 
                 if (gpsLat != null && gpsLon != null) {
                     payload.put("lat", gpsLat)
@@ -1077,6 +1135,11 @@ class AgentService : Service() {
             when {
                 accion == "update_apk" -> {
                     verificarYDescargarUpdate(forzar = true)
+                }
+                accion == "ping_pools" -> {
+                    val reporte = diagnosticoRedPools()
+                    val destinoLog = ipDest.ifEmpty { "AGENTE-RED" }
+                    postJsonNube(urlLogs, JSONObject().put("api_key", apiKey).put("ip", destinoLog).put("log", reporte))
                 }
                 accion == "scan" -> {
                     val enc = escanearRed(subnet, ipsBase)
