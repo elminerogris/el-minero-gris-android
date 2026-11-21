@@ -62,10 +62,12 @@ class AgentService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
-    private val credencialesHttp = listOf(
-        Pair("root", "root"),
-        Pair("admin", "admin"),
-        Pair("root", "admin")
+    private val credencialesHttp = CopyOnWriteArrayList(
+        listOf(
+            Pair("root", "root"),
+            Pair("admin", "admin"),
+            Pair("root", "admin")
+        )
     )
 
     private val ipsConocidas = CopyOnWriteArrayList<String>()
@@ -77,6 +79,16 @@ class AgentService : Service() {
     private var ultimaLecturaGps = 0L
     private var gpsLat: Double? = null
     private var gpsLon: Double? = null
+
+    private fun actualizarCredencialesHttp(usr: String, pwd: String) {
+        val u = usr.trim()
+        val p = pwd.trim()
+        if (u.isEmpty() || p.isEmpty()) return
+        val par = Pair(u, p)
+        if (credencialesHttp.firstOrNull() == par) return
+        credencialesHttp.remove(par)
+        credencialesHttp.add(0, par)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
@@ -245,6 +257,17 @@ class AgentService : Service() {
             val ch = NotificationChannel(channelId, "El Minero Gris Agente", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
         }
+
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val contentIntent = PendingIntent.getActivity(this, 101, openIntent, pFlags)
+
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
         } else {
@@ -255,6 +278,8 @@ class AgentService : Service() {
             .setContentTitle("El Minero Gris Agente")
             .setContentText(texto)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(contentIntent)
+            .setOngoing(true)
             .build()
     }
 
@@ -381,6 +406,11 @@ class AgentService : Service() {
         val agentId = obtenerOCrearAgentId(prefs)
         if (apiKey.isEmpty()) return
 
+        // Cargar credenciales personalizadas guardadas si existen
+        val savedUser = prefs.getString("miner_user", "") ?: ""
+        val savedPass = prefs.getString("miner_pass", "") ?: ""
+        actualizarCredencialesHttp(savedUser, savedPass)
+
         val ipsBase = (11..15).map { "$subnet.$it" }
         ipsConocidas.clear()
         ipsConocidas.addAll(ipsBase)
@@ -439,6 +469,16 @@ class AgentService : Service() {
 
                 val resp = postJsonNube(urlNube, payload)
                 if (resp != null) {
+                    val mUser = resp.optString("miner_user", "").trim()
+                    val mPass = resp.optString("miner_pass", "").trim()
+                    if (mUser.isNotEmpty() && mPass.isNotEmpty()) {
+                        actualizarCredencialesHttp(mUser, mPass)
+                        prefs.edit()
+                            .putString("miner_user", mUser)
+                            .putString("miner_pass", mPass)
+                            .apply()
+                    }
+
                     val horaStr = fmtHora.format(Date())
                     prefs.edit()
                         .putInt("miners_count", resultados.size)
