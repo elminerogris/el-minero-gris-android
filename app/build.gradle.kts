@@ -11,8 +11,8 @@ android {
         applicationId = "com.elminerogris.agente"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = System.getenv("AUTO_VERSION_CODE")?.toIntOrNull() ?: 5
+        versionName = System.getenv("AUTO_VERSION_NAME") ?: "1.4"
     }
 
     signingConfigs {
