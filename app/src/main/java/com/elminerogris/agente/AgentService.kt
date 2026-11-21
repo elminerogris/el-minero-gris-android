@@ -19,7 +19,9 @@ import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,6 +51,7 @@ class AgentService : Service() {
     private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
 
     private val netSemaphore = Semaphore(15)
+    private val scanMutex = Mutex()
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -1026,31 +1029,33 @@ class AgentService : Service() {
             .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
     }
 
-    // ==================== ESCANEO DE RED CON SEMÁFORO ====================
-    private suspend fun escanearRed(subnet: String, ipsBase: List<String>): List<String> = coroutineScope {
-        val encontradas = ipsBase.toMutableList()
-        val probadas = (2..254).map { i ->
-            async(Dispatchers.IO) {
-                netSemaphore.withPermit {
-                    val ip = "$subnet.$i"
-                    try {
-                        Socket().use { s -> s.connect(InetSocketAddress(ip, 4028), 600) }
-                        ip
-                    } catch (_: Exception) { null }
+    // ==================== ESCANEO DE RED CON SEMÁFORO Y MUTEX ====================
+    private suspend fun escanearRed(subnet: String, ipsBase: List<String>): List<String> = scanMutex.withLock {
+        coroutineScope {
+            val encontradas = ipsBase.toMutableList()
+            val probadas = (2..254).map { i ->
+                async(Dispatchers.IO) {
+                    netSemaphore.withPermit {
+                        val ip = "$subnet.$i"
+                        try {
+                            Socket().use { s -> s.connect(InetSocketAddress(ip, 4028), 600) }
+                            ip
+                        } catch (_: Exception) { null }
+                    }
                 }
-            }
-        }.awaitAll().filterNotNull()
+            }.awaitAll().filterNotNull()
 
-        for (ip in probadas) {
-            if (!encontradas.contains(ip)) encontradas.add(ip)
+            for (ip in probadas) {
+                if (!encontradas.contains(ip)) encontradas.add(ip)
+            }
+            encontradas
         }
-        encontradas
     }
 
     // ==================== COMANDOS REMOTOS COMPLETOS ====================
     private fun actualizarConfigSegura(ipDest: String, nuevosCampos: JSONObject) {
         val confActual = try {
-            val raw = peticionHttp(ipDest, "get_miner_conf.cgi", "GET", timeoutMs = 5000)
+            val raw = peticionHttp(ipDest, "get_miner_conf.cgi", "GET", timeoutMs = 8000)
             if (!raw.isNullOrEmpty()) JSONObject(raw) else JSONObject()
         } catch (_: Exception) { JSONObject() }
 
@@ -1059,7 +1064,7 @@ class AgentService : Service() {
             val k = ks.next()
             confActual.put(k, nuevosCampos.opt(k))
         }
-        peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = confActual, timeoutMs = 5000)
+        peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = confActual, timeoutMs = 12000)
     }
 
     private suspend fun procesarComandos(ordenes: JSONArray, apiKey: String, subnet: String, ipsBase: List<String>) {
@@ -1083,14 +1088,14 @@ class AgentService : Service() {
                         peticion4028(ipDest, "reboot")
                         peticion4028(ipDest, "restart_btminer")
                     } else {
-                        peticionHttp(ipDest, "reboot.cgi", timeoutMs = 5000)
+                        peticionHttp(ipDest, "reboot.cgi", timeoutMs = 8000)
                         peticion4028(ipDest, "restart")
                     }
                 }
                 accion == "reset" && !esWm -> {
                     for (ep in listOf("reset_conf.cgi", "factory_reset.cgi", "reset.cgi")) {
-                        peticionHttp(ipDest, ep, "POST_EMPTY", timeoutMs = 5000)
-                        peticionHttp(ipDest, ep, "GET", timeoutMs = 5000)
+                        peticionHttp(ipDest, ep, "POST_EMPTY", timeoutMs = 8000)
+                        peticionHttp(ipDest, ep, "GET", timeoutMs = 8000)
                     }
                     val poolsVacias = JSONArray()
                         .put(JSONObject().put("url", "").put("user", "").put("pass", ""))
@@ -1101,12 +1106,12 @@ class AgentService : Service() {
                         .put("bitmain-work-mode", "0")
                         .put("bitmain-fan-ctrl", false)
                         .put("bitmain-fan-pwm", "100")
-                    peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = defPayload, timeoutMs = 5000)
+                    peticionHttp(ipDest, "set_miner_conf.cgi", "POST", payloadJson = defPayload, timeoutMs = 12000)
                     peticion4028(ipDest, "removepool", "0")
                     peticion4028(ipDest, "removepool", "1")
                     peticion4028(ipDest, "removepool", "2")
                     delay(3000)
-                    peticionHttp(ipDest, "reboot.cgi", "GET", timeoutMs = 5000)
+                    peticionHttp(ipDest, "reboot.cgi", "GET", timeoutMs = 8000)
                 }
                 accion == "sleep" -> {
                     if (esWm) peticion4028(ipDest, "power_off")
@@ -1124,7 +1129,7 @@ class AgentService : Service() {
                 }
                 accion == "blink" -> {
                     if (esWm) peticion4028(ipDest, "set_led")
-                    else peticionHttp(ipDest, "blink.cgi", "POST", payloadJson = JSONObject().put("blink", "true"), timeoutMs = 4500)
+                    else peticionHttp(ipDest, "blink.cgi", "POST", payloadJson = JSONObject().put("blink", "true"), timeoutMs = 6000)
                 }
                 accion.startsWith("profile|") -> {
                     val modo = accion.substringAfter("|").lowercase()
@@ -1148,8 +1153,8 @@ class AgentService : Service() {
                             "_ant_conf_gateway" to p[5],
                             "_ant_conf_dnsservers" to p[6]
                         )
-                        peticionHttp(ipDest, "set_network_conf.cgi", "POST", payloadJson = jNet, timeoutMs = 5000)
-                        peticionHttp(ipDest, "set_network_conf.cgi", "POST_FORM", payloadForm = fNet, timeoutMs = 5000)
+                        peticionHttp(ipDest, "set_network_conf.cgi", "POST", payloadJson = jNet, timeoutMs = 12000)
+                        peticionHttp(ipDest, "set_network_conf.cgi", "POST_FORM", payloadForm = fNet, timeoutMs = 12000)
                         if (p[3].isNotEmpty() && !ipsConocidas.contains(p[3])) ipsConocidas.add(p[3])
                     }
                 }
@@ -1166,14 +1171,14 @@ class AgentService : Service() {
                             "_ant_pool2url" to p[4], "_ant_pool2user" to p[5], "_ant_pool2pw" to p[6],
                             "_ant_pool3url" to p[7], "_ant_pool3user" to p[8], "_ant_pool3pw" to p[9]
                         )
-                        peticionHttp(ipDest, "set_miner_conf.cgi", "POST_FORM", payloadForm = fPools, timeoutMs = 5000)
+                        peticionHttp(ipDest, "set_miner_conf.cgi", "POST_FORM", payloadForm = fPools, timeoutMs = 12000)
                     }
                 }
                 accion in listOf("get_log", "clog", "hlog", "dlog") && !esWm -> {
                     val ep = if (accion == "get_log") "log.cgi" else "$accion.cgi"
-                    var logTxt = peticionHttp(ipDest, ep, timeoutMs = 5000)
+                    var logTxt = peticionHttp(ipDest, ep, timeoutMs = 8000)
                     if (logTxt.isNullOrEmpty() && accion == "get_log") {
-                        logTxt = peticionHttp(ipDest, "get_kernel_log.cgi", timeoutMs = 5000)
+                        logTxt = peticionHttp(ipDest, "get_kernel_log.cgi", timeoutMs = 8000)
                     }
                     if (!logTxt.isNullOrEmpty()) {
                         postJsonNube(urlLogs, JSONObject().put("api_key", apiKey).put("ip", ipDest).put("log", logTxt))
