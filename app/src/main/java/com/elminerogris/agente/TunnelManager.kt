@@ -6,14 +6,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlin.math.min
 
 class TunnelManager(
     private val scope: CoroutineScope,
     private val onOrdenRecibida: suspend (JSONArray) -> Unit
 ) {
     private val client = OkHttpClient.Builder()
-        .pingInterval(25, TimeUnit.SECONDS) // Mantiene vivo el túnel en Render
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .pingInterval(25, TimeUnit.SECONDS) // Heartbeat nativo cada 25s (mantiene vivo el túnel en Render)
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // Sin timeout de lectura para WebSocket
         .build()
 
@@ -21,9 +22,15 @@ class TunnelManager(
     private var activo = false
     private var reconectarJob: Job? = null
 
+    private val reconnectMinMs = 3_000L
+    private val reconnectMaxMs = 60_000L
+    private var delayActualMs = reconnectMinMs
+    private var conectadoDesdeMs = 0L
+
     fun iniciar(apiKey: String, agentId: String) {
         if (activo || apiKey.isEmpty()) return
         activo = true
+        delayActualMs = reconnectMinMs
         conectar(apiKey, agentId)
     }
 
@@ -43,7 +50,7 @@ class TunnelManager(
         val request = Request.Builder().url(urlWs).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                // Confirmar conexión al servidor
+                conectadoDesdeMs = System.currentTimeMillis()
                 ws.send(JSONObject().put("tipo", "hello").put("agent_id", agentId).toString())
             }
 
@@ -58,7 +65,6 @@ class TunnelManager(
                         }
                         if (ordenes != null && ordenes.length() > 0) {
                             onOrdenRecibida(ordenes)
-                            // Avisar al servidor que la orden fue ejecutada
                             ws.send(JSONObject().put("tipo", "ack").put("ok", true).toString())
                         }
                     } catch (_: Exception) {}
@@ -77,9 +83,18 @@ class TunnelManager(
 
     private fun programarReconexion(apiKey: String, agentId: String) {
         if (!activo) return
+        // Si el túnel duró más de 60s estable, reseteamos el backoff a 3s
+        if (conectadoDesdeMs > 0L && (System.currentTimeMillis() - conectadoDesdeMs) > 60_000L) {
+            delayActualMs = reconnectMinMs
+        }
+        conectadoDesdeMs = 0L
+
+        val espera = delayActualMs
+        delayActualMs = min(delayActualMs * 2L, reconnectMaxMs)
+
         reconectarJob?.cancel()
         reconectarJob = scope.launch {
-            delay(5000L)
+            delay(espera)
             if (activo) conectar(apiKey, agentId)
         }
     }
