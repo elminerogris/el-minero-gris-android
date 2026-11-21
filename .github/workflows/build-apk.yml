@@ -25,12 +25,23 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Calcular versión automática
+        id: ver
+        run: |
+          CODE=$((10 + ${{ github.run_number }}))
+          NAME="1.${{ github.run_number }}"
+          echo "code=$CODE" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "{\"version_code\": $CODE, \"version_name\": \"$NAME\"}" > version.json
+
       - name: Decodificar Keystore de firma fija
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
 
       - name: Compilar APK Release firmado
         env:
+          AUTO_VERSION_CODE: ${{ steps.ver.outputs.code }}
+          AUTO_VERSION_NAME: ${{ steps.ver.outputs.name }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -39,9 +50,11 @@ jobs:
       - name: Renombrar APK
         run: cp app/build/outputs/apk/release/app-release.apk ElMineroGris-Agente.apk
 
-      - name: Publicar en GitHub Releases (Enlace Directo)
+      - name: Publicar en GitHub Releases (APK + version.json)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: El Minero Gris - Agente Android
-          files: ElMineroGris-Agente.apk
+          files: |
+            ElMineroGris-Agente.apk
+            version.json
