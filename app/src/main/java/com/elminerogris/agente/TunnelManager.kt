@@ -36,6 +36,15 @@ class TunnelManager(
         "root" to "admin"
     )
 
+    private val headersBloqueados = setOf(
+        "host",
+        "connection",
+        "content-length",
+        "accept-encoding",
+        "upgrade",
+        "sec-websocket-key"
+    )
+
     private var webSocket: WebSocket? = null
     private var activo = false
     private var reconectarJob: Job? = null
@@ -182,7 +191,9 @@ class TunnelManager(
                     val keys = headersIn.keys()
                     while (keys.hasNext()) {
                         val k = keys.next()
-                        if (authHeader != null && k.equals("Authorization", ignoreCase = true)) continue
+                        val kl = k.lowercase()
+                        if (kl in headersBloqueados) continue
+                        if (authHeader != null && kl == "authorization") continue
                         val v = headersIn.optString(k, "")
                         if (v.isNotEmpty()) rb.header(k, v)
                     }
