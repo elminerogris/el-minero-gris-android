@@ -63,6 +63,7 @@ class AgentService : Service() {
     private val cacheInfoEstatica = ConcurrentHashMap<String, MutableMap<String, Any>>()
     private var ultimoEscaneoAuto = 0L
     private var ultimoCheckUpdate = 0L
+    private var tunnelManager: TunnelManager? = null
 
     private var ultimaLecturaGps = 0L
     private var gpsLat: Double? = null
@@ -83,6 +84,7 @@ class AgentService : Service() {
     override fun onDestroy() {
         getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("service_running", false).apply()
+        tunnelManager?.detener()
         scope.cancel()
         liberarLocks()
         super.onDestroy()
@@ -272,6 +274,13 @@ class AgentService : Service() {
         val ipsBase = (11..15).map { "$subnet.$it" }
         ipsConocidas.clear()
         ipsConocidas.addAll(ipsBase)
+
+        // Túnel WebSocket persistente para comandos en tiempo real (< 1s)
+        tunnelManager?.detener()
+        tunnelManager = TunnelManager(scope) { ordenesInstantaneas ->
+            procesarComandos(ordenesInstantaneas, apiKey, subnet, ipsBase)
+        }
+        tunnelManager?.iniciar(apiKey, agentId)
 
         val fmtHora = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
