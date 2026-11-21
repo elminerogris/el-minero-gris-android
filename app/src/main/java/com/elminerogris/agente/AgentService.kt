@@ -6,11 +6,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.location.Location
 import android.location.LocationManager
 import android.net.wifi.WifiManager
@@ -31,7 +33,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.net.URL
 import java.net.URLEncoder
@@ -134,29 +138,75 @@ class AgentService : Service() {
         try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) {}
     }
 
-    // ==================== TELEMETRÍA DEL CELULAR (BATERÍA / CARGA / TEMP) ====================
+    private fun obtenerIpLocalDispositivo(): String {
+        try {
+            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return ""
+            var fallback = ""
+            while (ifaces.hasMoreElements()) {
+                val iface = ifaces.nextElement()
+                if (!iface.isUp || iface.isLoopback) continue
+                val addrs = iface.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
+                            return ip
+                        }
+                        if (fallback.isEmpty()) fallback = ip
+                    }
+                }
+            }
+            return fallback
+        } catch (_: Exception) {
+            return ""
+        }
+    }
+
+    // ==================== TELEMETRÍA DEL DISPOSITIVO (CELULAR / TV BOX / BATERÍA / IP LOCAL) ====================
     private fun obtenerTelemetriaCelular(): JSONObject {
         val info = JSONObject()
         try {
             val battIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            var pct = -1
+            var cargando = false
+            var tempC = 0.0
+            var battPresent = false
+
             if (battIntent != null) {
+                battPresent = battIntent.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)
                 val level = battIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                 val scale = battIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-                val pct = if (level >= 0 && scale > 0) ((level * 100f) / scale).roundToInt() else -1
+                pct = if (level >= 0 && scale > 0) ((level * 100f) / scale).roundToInt() else -1
 
                 val status = battIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                val cargando = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                cargando = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                         status == BatteryManager.BATTERY_STATUS_FULL
 
                 val tempDecimas = battIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
-                val tempC = if (tempDecimas > 0) (tempDecimas / 10.0) else 0.0
-
-                info.put("battery_pct", pct)
-                info.put("charging", cargando)
-                info.put("battery_temp_c", tempC)
+                tempC = if (tempDecimas > 0) (tempDecimas / 10.0) else 0.0
             }
-            info.put("model", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
-            info.put("android", Build.VERSION.RELEASE ?: "")
+
+            val uiMode = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+            val esTvMode = uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+            val tieneLeanback = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+            val esTvBox = esTvMode || tieneLeanback || !battPresent || pct < 0
+
+            val marca = (Build.MANUFACTURER ?: "").trim().replaceFirstChar { it.uppercase() }
+            val modelo = (Build.MODEL ?: "").trim()
+            val verAndroid = Build.VERSION.RELEASE ?: ""
+
+            info.put("device_type", if (esTvBox) "TV Box" else "Celular")
+            info.put("run_mode", "APK Directo")
+            info.put("brand", marca)
+            info.put("model", modelo)
+            info.put("local_ip", obtenerIpLocalDispositivo())
+            info.put("has_battery", battPresent && pct >= 0 && !esTvBox)
+            info.put("battery_pct", pct)
+            info.put("charging", cargando)
+            info.put("battery_temp_c", tempC)
+            info.put("os_info", "Android $verAndroid".trim())
+            info.put("android", verAndroid)
         } catch (_: Exception) {}
         return info
     }
@@ -373,11 +423,13 @@ class AgentService : Service() {
                 val arrMineros = JSONArray()
                 for (r in resultados) arrMineros.put(r)
 
+                val telemetriaDev = obtenerTelemetriaCelular()
                 val payload = JSONObject()
                     .put("api_key", apiKey)
                     .put("agent_id", agentId)
                     .put("mineros", arrMineros)
-                    .put("phone", obtenerTelemetriaCelular())
+                    .put("device", telemetriaDev)
+                    .put("phone", telemetriaDev)
 
                 if (gpsLat != null && gpsLon != null) {
                     payload.put("lat", gpsLat)
