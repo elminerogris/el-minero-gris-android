@@ -52,7 +52,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var valSubred: TextView
 
     private lateinit var txtCheckWifi: TextView
-    private lateinit var txtCheckBateria: TextView
+
+    // Modo 24/7 (Batería sin restricciones con interruptor visual)
+    private lateinit var cardModo247: LinearLayout
+    private lateinit var switchModo247: Switch
+    private lateinit var txtEstadoModo247: TextView
 
     // Clima / GPS opcional
     private lateinit var switchClima: Switch
@@ -353,39 +357,76 @@ class MainActivity : AppCompatActivity() {
         cardLoginForm.addView(btnConectarLogin)
         root.addView(cardLoginForm)
 
-        // ==================== 6. CHECKLIST DE SALUD ====================
-        val cardSalud = LinearLayout(this).apply {
+        // ==================== 6. ESTADO DE RED WI-FI ====================
+        val cardWifi = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#111624", 12, "#232B42")
+            setPadding(16.dp(), 13.dp(), 16.dp(), 13.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = 12.dp() }
+        }
+
+        txtCheckWifi = TextView(this).apply {
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+        }
+        cardWifi.addView(txtCheckWifi)
+        root.addView(cardWifi)
+
+        // ==================== 7. TARJETA CON INTERRUPTOR: MODO 24/7 ====================
+        cardModo247 = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#111624", 12, "#232B42")
             setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = 14.dp() }
+            ).apply { bottomMargin = 12.dp() }
         }
 
-        cardSalud.addView(TextView(this).apply {
-            text = "Estado del teléfono (toca para corregir)"
-            textSize = 13f
+        val fila247Header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val titulo247 = TextView(this).apply {
+            text = "🔋  Modo 24/7 (Sin cortes)"
+            textSize = 13.8f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, 8.dp())
-        })
-
-        txtCheckWifi = TextView(this).apply {
-            textSize = 12.5f
-            setPadding(0, 5.dp(), 0, 5.dp())
-        }
-        txtCheckBateria = TextView(this).apply {
-            textSize = 12.5f
-            setPadding(0, 5.dp(), 0, 2.dp())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        cardSalud.addView(txtCheckWifi)
-        cardSalud.addView(txtCheckBateria)
-        root.addView(cardSalud)
+        switchModo247 = Switch(this)
 
-        // ==================== 7. TARJETA OPCIONAL: CLIMA EXACTO ====================
+        fila247Header.addView(titulo247)
+        fila247Header.addView(switchModo247)
+
+        val desc247 = TextView(this).apply {
+            text = "Evita que Android cierre la app al apagar la pantalla. Actívalo y toca \"Permitir\" para monitorear sin interrupciones."
+            textSize = 11.8f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, 6.dp(), 0, 5.dp())
+        }
+
+        txtEstadoModo247 = TextView(this).apply {
+            textSize = 11.8f
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, 2.dp(), 0, 0)
+        }
+
+        cardModo247.addView(fila247Header)
+        cardModo247.addView(desc247)
+        cardModo247.addView(txtEstadoModo247)
+        root.addView(cardModo247)
+
+        // ==================== 8. TARJETA OPCIONAL: CLIMA EXACTO ====================
         val cardClima = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#111624", 12, "#232B42")
@@ -407,7 +448,7 @@ class MainActivity : AppCompatActivity() {
 
         val tituloClima = TextView(this).apply {
             text = "🌤️  Clima exacto de tus ASICs"
-            textSize = 13.5f
+            textSize = 13.8f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -438,7 +479,7 @@ class MainActivity : AppCompatActivity() {
         cardClima.addView(txtEstadoClima)
         root.addView(cardClima)
 
-        // ==================== 8. ACCESOS RÁPIDOS ====================
+        // ==================== 9. ACCESOS RÁPIDOS ====================
         val btnAbrirWeb = Button(this).apply {
             text = "🌐   Abrir Panel Web (elminerogris.com)"
             isAllCaps = false
@@ -471,6 +512,29 @@ class MainActivity : AppCompatActivity() {
         setContentView(scroll)
 
         // ==================== EVENTOS ====================
+        switchModo247.setOnCheckedChangeListener { _, isChecked ->
+            if (actualizandoSwitchInterno) return@setOnCheckedChangeListener
+            val yaPermitido = estaBateriaSinRestricciones()
+            if (isChecked && !yaPermitido) {
+                // Revertimos visualmente hasta que Android confirme en onResume()
+                actualizandoSwitchInterno = true
+                switchModo247.isChecked = false
+                actualizandoSwitchInterno = false
+                pedirIgnorarBateria()
+            } else if (!isChecked && yaPermitido) {
+                actualizandoSwitchInterno = true
+                switchModo247.isChecked = true
+                actualizandoSwitchInterno = false
+                abrirAjustesBateriaSistema()
+            }
+        }
+
+        cardModo247.setOnClickListener {
+            if (!estaBateriaSinRestricciones()) {
+                pedirIgnorarBateria()
+            }
+        }
+
         switchClima.setOnCheckedChangeListener { _, isChecked ->
             if (actualizandoSwitchInterno) return@setOnCheckedChangeListener
             if (isChecked) {
@@ -509,12 +573,17 @@ class MainActivity : AppCompatActivity() {
                 btnConectarLogin.text = "🔐   Conectar e Iniciar Agente"
                 if (res != null && res.optBoolean("ok", false)) {
                     val subWifi = detectarSubredWifi() ?: res.optString("subnet", "192.168.0")
-                    prefs.edit()
+                    val ed = prefs.edit()
                         .putString("username", res.optString("username"))
                         .putString("api_key", res.optString("api_key"))
                         .putString("subnet", subWifi)
                         .putBoolean("service_running", true)
-                        .apply()
+                    val mUser = res.optString("miner_user", "").trim()
+                    val mPass = res.optString("miner_pass", "").trim()
+                    if (mUser.isNotEmpty() && mPass.isNotEmpty()) {
+                        ed.putString("miner_user", mUser).putString("miner_pass", mPass)
+                    }
+                    ed.apply()
                     mostrandoFormularioLogin = false
                     iniciarServicio()
                     actualizarTodoUI()
@@ -545,11 +614,8 @@ class MainActivity : AppCompatActivity() {
             actualizarTodoUI()
         }
 
-        txtCheckWifi.setOnClickListener {
+        cardWifi.setOnClickListener {
             startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
-        }
-        txtCheckBateria.setOnClickListener {
-            pedirIgnorarBateria()
         }
 
         btnAbrirWeb.setOnClickListener {
@@ -604,6 +670,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun estaBateriaSinRestricciones(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        return pm?.isIgnoringBatteryOptimizations(packageName) == true
+    }
+
     private fun actualizarTodoUI() {
         val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
         val user = prefs.getString("username", "") ?: ""
@@ -615,6 +687,7 @@ class MainActivity : AppCompatActivity() {
         val count = prefs.getInt("miners_count", 0)
         val lastSync = prefs.getString("last_sync", "Esperando...") ?: "Esperando..."
         val gpsActivo = prefs.getBoolean("gps_enabled", false)
+        val batOk = estaBateriaSinRestricciones()
 
         val dp = resources.displayMetrics.density
         fun fondoBanner(bg: String, border: String): GradientDrawable {
@@ -675,23 +748,26 @@ class MainActivity : AppCompatActivity() {
             txtCheckWifi.text = "✅  Wi-Fi local conectado ($subnetWifi.x)"
             txtCheckWifi.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
-            txtCheckWifi.text = "⚠️  Sin Wi-Fi — Conéctate al router de tu granja"
+            txtCheckWifi.text = "⚠️  Sin Wi-Fi — Toca aquí para conectar al router de tu granja"
             txtCheckWifi.setTextColor(Color.parseColor("#FCD34D"))
         }
 
-        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val batOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || pm?.isIgnoringBatteryOptimizations(packageName) == true
-        if (batOk) {
-            txtCheckBateria.text = "✅  Batería 24/7: Sin restricciones de Android"
-            txtCheckBateria.setTextColor(Color.parseColor("#6EE7B7"))
-        } else {
-            txtCheckBateria.text = "⚠️  Ahorro de batería activo — Toca para permitir 24/7"
-            txtCheckBateria.setTextColor(Color.parseColor("#FCD34D"))
-        }
-
+        // Actualizar tarjeta visual de Modo 24/7
         actualizandoSwitchInterno = true
+        switchModo247.isChecked = batOk
         switchClima.isChecked = gpsActivo
         actualizandoSwitchInterno = false
+
+        if (batOk) {
+            cardModo247.background = fondoBanner("#111624", "#10B981")
+            txtEstadoModo247.text = "✅ Protegido — Funcionando 24/7 sin cortes"
+            txtEstadoModo247.setTextColor(Color.parseColor("#34D399"))
+        } else {
+            cardModo247.background = fondoBanner("#1C160C", "#F59E0B")
+            txtEstadoModo247.text = "⚠️ Desactivado — Toca el interruptor para permitir 24/7"
+            txtEstadoModo247.setTextColor(Color.parseColor("#FBBF24"))
+        }
+
         if (gpsActivo) {
             txtEstadoClima.text = "● Activo — Usando ubicación precisa para el clima exterior"
             txtEstadoClima.setTextColor(Color.parseColor("#34D399"))
@@ -709,8 +785,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 startActivity(intent)
             } catch (_: Exception) {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                abrirAjustesBateriaSistema()
             }
+        }
+    }
+
+    private fun abrirAjustesBateriaSistema() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {}
         }
     }
 
