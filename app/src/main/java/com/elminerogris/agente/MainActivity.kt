@@ -18,6 +18,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -30,6 +31,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -50,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cardBanner: LinearLayout
     private lateinit var txtBadgeEstado: TextView
     private lateinit var txtDescEstado: TextView
+    private lateinit var txtEstadoTunel: TextView
 
     private lateinit var valAsics: TextView
     private lateinit var valSync: TextView
@@ -77,6 +81,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnIniciarRapido: Button
     private lateinit var btnDetener: Button
     private lateinit var btnCambiarCuenta: TextView
+    private lateinit var btnDiagnostico: Button
     private lateinit var btnActualizar: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -192,8 +197,15 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#CBD5E1"))
             setPadding(0, 5.dp(), 0, 0)
         }
+        txtEstadoTunel = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, 7.dp(), 0, 0)
+        }
         cardBanner.addView(txtBadgeEstado)
         cardBanner.addView(txtDescEstado)
+        cardBanner.addView(txtEstadoTunel)
         root.addView(cardBanner)
 
         // ==================== 3. MÉTRICAS EN VIVO (2x2) ====================
@@ -484,7 +496,7 @@ class MainActivity : AppCompatActivity() {
         cardClima.addView(txtEstadoClima)
         root.addView(cardClima)
 
-        // ==================== 9. ACCESOS RÁPIDOS ====================
+        // ==================== 9. ACCESOS RÁPIDOS Y DIAGNÓSTICO ====================
         val btnAbrirWeb = Button(this).apply {
             text = "🌐   Abrir Panel Web (elminerogris.com)"
             isAllCaps = false
@@ -495,6 +507,18 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 46.dp()
+            ).apply { bottomMargin = 10.dp() }
+        }
+
+        btnDiagnostico = Button(this).apply {
+            text = "🩺   Diagnóstico rápido de red y ASICs"
+            isAllCaps = false
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#7DD3FC"))
+            background = fondo("#0D1D2C", 10, "#0284C7")
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                44.dp()
             ).apply { bottomMargin = 10.dp() }
         }
 
@@ -511,6 +535,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(btnAbrirWeb)
+        root.addView(btnDiagnostico)
         root.addView(btnActualizar)
 
         scroll.addView(root)
@@ -609,7 +634,10 @@ class MainActivity : AppCompatActivity() {
 
         btnDetener.setOnClickListener {
             stopService(Intent(this, AgentService::class.java))
-            prefs.edit().putBoolean("service_running", false).apply()
+            prefs.edit()
+                .putBoolean("service_running", false)
+                .putBoolean("tunnel_connected", false)
+                .apply()
             actualizarTodoUI()
         }
 
@@ -624,6 +652,10 @@ class MainActivity : AppCompatActivity() {
 
         btnAbrirWeb.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlPanel)))
+        }
+
+        btnDiagnostico.setOnClickListener {
+            ejecutarDiagnosticoRapido()
         }
 
         btnActualizar.setOnClickListener {
@@ -659,7 +691,6 @@ class MainActivity : AppCompatActivity() {
         actualizarTodoUI()
         iniciarRefrescoEnVivo()
 
-        // Si el usuario volvió de activar "Permitir instalar apps desconocidas", iniciar descarga automáticamente
         if (esperandoPermisoInstalacion && apkUpdateUrl.isNotEmpty()) {
             esperandoPermisoInstalacion = false
             if (puedeInstalarApks()) {
@@ -685,6 +716,61 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun ejecutarDiagnosticoRapido() {
+        btnDiagnostico.isEnabled = false
+        btnDiagnostico.text = "🩺   Probando red y ASICs..."
+        val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+        val sub = detectarSubredWifi() ?: (prefs.getString("subnet", "192.168.0") ?: "192.168.0")
+        val tunelOk = prefs.getBoolean("tunnel_connected", false)
+        val running = prefs.getBoolean("service_running", false)
+
+        scope.launch {
+            val reporte = withContext(Dispatchers.IO) {
+                val sb = StringBuilder()
+                sb.append("• Wi-Fi Local: ${if (detectarSubredWifi() != null) "✅ Conectado ($sub.x)" else "⚠️ Sin Wi-Fi ($sub.x)"}\n")
+
+                val nubeOk = try {
+                    val conn = (URL(urlVersion).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                    }
+                    conn.responseCode == 200
+                } catch (_: Exception) { false }
+
+                sb.append("• Servidor Web: ${if (nubeOk) "✅ elminerogris.com responde" else "❌ Sin conexión a la nube"}\n")
+                sb.append("• Agente 24/7: ${if (running) "✅ Activo" else "⏸ Detenido"}\n")
+                sb.append("• Túnel Remoto: ${if (tunelOk) "⚡ Conectado" else "⏳ Reconectando"}\n")
+
+                val activos4028 = mutableListOf<String>()
+                (2..254).map { oct ->
+                    async(Dispatchers.IO) {
+                        val ip = "$sub.$oct"
+                        try {
+                            Socket().use { s -> s.connect(InetSocketAddress(ip, 4028), 350) }
+                            ip
+                        } catch (_: Exception) { null }
+                    }
+                }.awaitAll().filterNotNull().forEach { activos4028.add(it) }
+
+                sb.append("• ASICs (puerto 4028): ${activos4028.size} detectado(s)")
+                if (activos4028.isNotEmpty()) {
+                    sb.append("\n  IPs: ${activos4028.take(8).joinToString(", ")}${if (activos4028.size > 8) "..." else ""}")
+                }
+                sb.toString()
+            }
+
+            btnDiagnostico.isEnabled = true
+            btnDiagnostico.text = "🩺   Diagnóstico rápido de red y ASICs"
+
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("🩺 Diagnóstico del Puente Local")
+                .setMessage(reporte)
+                .setPositiveButton("Aceptar", null)
+                .show()
+        }
+    }
+
     private fun estaBateriaSinRestricciones(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -699,6 +785,7 @@ class MainActivity : AppCompatActivity() {
         val subnetGuardada = prefs.getString("subnet", "192.168.0") ?: "192.168.0"
         val subnetWifi = detectarSubredWifi()
         val running = prefs.getBoolean("service_running", false)
+        val tunelOk = prefs.getBoolean("tunnel_connected", false)
         val count = prefs.getInt("miners_count", 0)
         val lastSync = prefs.getString("last_sync", "Esperando...") ?: "Esperando..."
         val gpsActivo = prefs.getBoolean("gps_enabled", false)
@@ -731,6 +818,21 @@ class MainActivity : AppCompatActivity() {
                 txtBadgeEstado.text = "●  LISTO PARA CONFIGURAR"
                 txtBadgeEstado.setTextColor(Color.parseColor("#60A5FA"))
                 txtDescEstado.text = "Esta app conecta los ASICs de tu red Wi-Fi local con tu panel en elminerogris.com."
+            }
+        }
+
+        when {
+            !running || apiKey.isEmpty() -> {
+                txtEstadoTunel.text = "○ Túnel remoto: Detenido"
+                txtEstadoTunel.setTextColor(Color.parseColor("#94A3B8"))
+            }
+            tunelOk -> {
+                txtEstadoTunel.text = "⚡ Túnel remoto: Conectado (Router y ASICs listos)"
+                txtEstadoTunel.setTextColor(Color.parseColor("#38BDF8"))
+            }
+            else -> {
+                txtEstadoTunel.text = "⏳ Túnel remoto: Reconectando..."
+                txtEstadoTunel.setTextColor(Color.parseColor("#FBBF24"))
             }
         }
 
@@ -873,7 +975,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== ACTUALIZACIÓN RÁPIDA CON OKHTTP ====================
     private fun puedeInstalarApks(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             packageManager.canRequestPackageInstalls()
