@@ -175,6 +175,33 @@ class AgentService : Service() {
         }
     }
 
+    private fun obtenerBssidWifi(): String {
+        return try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return ""
+            @Suppress("DEPRECATION")
+            val bssid = wm.connectionInfo?.bssid?.trim()?.uppercase() ?: ""
+            if (bssid.length == 17 && bssid != "02:00:00:00:00:00" && bssid != "00:00:00:00:00:00") bssid else ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun obtenerGatewayWifi(): String {
+        return try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return ""
+            @Suppress("DEPRECATION")
+            val gwInt = wm.dhcpInfo?.gateway ?: 0
+            if (gwInt == 0) return ""
+            val b1 = gwInt and 0xff
+            val b2 = (gwInt shr 8) and 0xff
+            val b3 = (gwInt shr 16) and 0xff
+            val b4 = (gwInt shr 24) and 0xff
+            "$b1.$b2.$b3.$b4"
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     // ==================== TELEMETRÍA DEL DISPOSITIVO (CELULAR / TV BOX / BATERÍA / IP LOCAL) ====================
     private fun obtenerTelemetriaCelular(): JSONObject {
         val info = JSONObject()
@@ -213,6 +240,8 @@ class AgentService : Service() {
             info.put("brand", marca)
             info.put("model", modelo)
             info.put("local_ip", obtenerIpLocalDispositivo())
+            info.put("router_mac", obtenerBssidWifi())
+            info.put("gateway", obtenerGatewayWifi())
             info.put("has_battery", battPresent && pct >= 0 && !esTvBox)
             info.put("battery_pct", pct)
             info.put("charging", cargando)
@@ -454,12 +483,18 @@ class AgentService : Service() {
                 for (r in resultados) arrMineros.put(r)
 
                 val telemetriaDev = obtenerTelemetriaCelular()
+                val routerMac = obtenerBssidWifi()
+                val gwWifi = obtenerGatewayWifi()
+
                 val payload = JSONObject()
                     .put("api_key", apiKey)
                     .put("agent_id", agentId)
                     .put("mineros", arrMineros)
                     .put("device", telemetriaDev)
                     .put("phone", telemetriaDev)
+
+                if (routerMac.isNotEmpty()) payload.put("router_mac", routerMac)
+                if (gwWifi.isNotEmpty()) payload.put("gateway", gwWifi)
 
                 if (gpsLat != null && gpsLon != null) {
                     payload.put("lat", gpsLat)
