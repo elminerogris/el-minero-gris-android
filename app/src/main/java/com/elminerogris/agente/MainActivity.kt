@@ -1,8 +1,11 @@
 package com.elminerogris.agente
 
 import android.Manifest
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -12,6 +15,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
@@ -21,11 +25,9 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -34,6 +36,7 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var liveRefreshJob: Job? = null
+    private var downloadProgressJob: Job? = null
 
     private val urlPanel = "https://elminerogris.com"
     private val urlLogin = "https://elminerogris.com/api/agente/login"
@@ -41,6 +44,9 @@ class MainActivity : AppCompatActivity() {
     private var apkUpdateUrl = ""
     private var mostrandoFormularioLogin = false
     private var actualizandoSwitchInterno = false
+
+    private var activeDownloadId: Long = -1L
+    private var downloadReceiver: BroadcastReceiver? = null
 
     private lateinit var cardBanner: LinearLayout
     private lateinit var txtBadgeEstado: TextView
@@ -516,7 +522,6 @@ class MainActivity : AppCompatActivity() {
             if (actualizandoSwitchInterno) return@setOnCheckedChangeListener
             val yaPermitido = estaBateriaSinRestricciones()
             if (isChecked && !yaPermitido) {
-                // Revertimos visualmente hasta que Android confirme en onResume()
                 actualizandoSwitchInterno = true
                 switchModo247.isChecked = false
                 actualizandoSwitchInterno = false
@@ -624,7 +629,7 @@ class MainActivity : AppCompatActivity() {
 
         btnActualizar.setOnClickListener {
             if (apkUpdateUrl.isNotEmpty()) {
-                descargarEInstalar()
+                descargarEInstalarConDownloadManager()
             } else {
                 btnActualizar.text = "⏳ Verificando versión..."
                 verificarActualizacion(manual = true)
@@ -752,7 +757,6 @@ class MainActivity : AppCompatActivity() {
             txtCheckWifi.setTextColor(Color.parseColor("#FCD34D"))
         }
 
-        // Actualizar tarjeta visual de Modo 24/7
         actualizandoSwitchInterno = true
         switchModo247.isChecked = batOk
         switchClima.isChecked = gpsActivo
@@ -859,19 +863,155 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun descargarEInstalar() {
-        btnActualizar.isEnabled = false
-        btnActualizar.text = "⬇️   Descargando APK..."
-        scope.launch {
-            val archivoApk = withContext(Dispatchers.IO) { descargarApk(apkUpdateUrl) }
-            if (archivoApk != null) {
-                btnActualizar.text = "✅   Abriendo instalador..."
-                instalarApk(archivoApk)
-            } else {
-                btnActualizar.text = "❌   Error descargando — Toca para reintentar"
+    // ==================== DESCARGA NATIVA CON DOWNLOADMANAGER ====================
+    private fun descargarEInstalarConDownloadManager() {
+        try {
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+            if (dm == null) {
+                abrirDescargaEnNavegador()
+                return
             }
-            btnActualizar.isEnabled = true
+
+            val fileName = "ElMineroGris-Update.apk"
+            val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            val oldFile = File(dir, fileName)
+            if (oldFile.exists()) oldFile.delete()
+
+            val request = DownloadManager.Request(Uri.parse(apkUpdateUrl)).apply {
+                setTitle("El Minero Gris — Actualización")
+                setDescription("Descargando nueva versión del Agente...")
+                setMimeType("application/vnd.android.package-archive")
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalFilesDir(this@MainActivity, Environment.DIRECTORY_DOWNLOADS, fileName)
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+            }
+
+            btnActualizar.isEnabled = false
+            btnActualizar.text = "⬇️   Iniciando descarga..."
+
+            limpiarReceptorDescarga()
+            activeDownloadId = dm.enqueue(request)
+
+            downloadReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
+                    if (id == activeDownloadId) {
+                        downloadProgressJob?.cancel()
+                        verificarResultadoDescarga(dm, id)
+                    }
+                }
+            }
+
+            val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(downloadReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(downloadReceiver, filter)
+            }
+
+            iniciarSeguimientoProgreso(dm, activeDownloadId)
+        } catch (_: Exception) {
+            abrirDescargaEnNavegador()
         }
+    }
+
+    private fun iniciarSeguimientoProgreso(dm: DownloadManager, downloadId: Long) {
+        downloadProgressJob?.cancel()
+        downloadProgressJob = scope.launch {
+            while (isActive) {
+                val query = DownloadManager.Query().setFilterById(downloadId)
+                val cursor = dm.query(query)
+                var terminado = false
+                if (cursor != null) {
+                    cursor.use { c ->
+                        if (c.moveToFirst()) {
+                            val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                            val downloaded = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                            val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                            when (status) {
+                                DownloadManager.STATUS_RUNNING -> {
+                                    if (total > 0) {
+                                        val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                                        btnActualizar.text = "⬇️   Descargando APK... $pct%"
+                                    } else {
+                                        btnActualizar.text = "⬇️   Descargando APK..."
+                                    }
+                                }
+                                DownloadManager.STATUS_PENDING -> {
+                                    btnActualizar.text = "⏳   Esperando red para descargar..."
+                                }
+                                DownloadManager.STATUS_SUCCESSFUL, DownloadManager.STATUS_FAILED -> {
+                                    terminado = true
+                                }
+                            }
+                        } else {
+                            terminado = true
+                        }
+                    }
+                }
+                if (terminado) break
+                delay(600L)
+            }
+        }
+    }
+
+    private fun verificarResultadoDescarga(dm: DownloadManager, downloadId: Long) {
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        val cursor = dm.query(query)
+        var exito = false
+        if (cursor != null) {
+            cursor.use { c ->
+                if (c.moveToFirst()) {
+                    val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                    exito = (status == DownloadManager.STATUS_SUCCESSFUL)
+                }
+            }
+        }
+
+        btnActualizar.isEnabled = true
+        limpiarReceptorDescarga()
+
+        if (exito) {
+            val uri = dm.getUriForDownloadedFile(downloadId)
+            if (uri != null) {
+                btnActualizar.text = "✅   Abriendo instalador..."
+                instalarApkDesdeUri(uri)
+            } else {
+                abrirDescargaEnNavegador()
+            }
+        } else {
+            btnActualizar.text = "❌   Error descargando — Toca para reintentar"
+        }
+    }
+
+    private fun instalarApkDesdeUri(uri: Uri) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            abrirDescargaEnNavegador()
+        }
+    }
+
+    private fun abrirDescargaEnNavegador() {
+        btnActualizar.isEnabled = true
+        btnActualizar.text = "🌐   Abriendo descarga en navegador..."
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apkUpdateUrl)))
+        } catch (_: Exception) {}
+    }
+
+    private fun limpiarReceptorDescarga() {
+        downloadReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        downloadReceiver = null
     }
 
     private fun obtenerVersionNube(): JSONObject? {
@@ -883,31 +1023,6 @@ class MainActivity : AppCompatActivity() {
             }
             if (conn.responseCode == 200) JSONObject(conn.inputStream.bufferedReader().readText()) else null
         } catch (_: Exception) { null }
-    }
-
-    private fun descargarApk(urlStr: String): File? {
-        return try {
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
-                readTimeout = 30000
-            }
-            if (conn.responseCode != 200) return null
-            val outFile = File(cacheDir, "ElMineroGris-Update.apk")
-            conn.inputStream.use { input ->
-                FileOutputStream(outFile).use { output -> input.copyTo(output) }
-            }
-            outFile
-        } catch (_: Exception) { null }
-    }
-
-    private fun instalarApk(file: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        startActivity(intent)
     }
 
     private fun iniciarServicio() {
@@ -934,6 +1049,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         liveRefreshJob?.cancel()
+        downloadProgressJob?.cancel()
+        limpiarReceptorDescarga()
         scope.cancel()
         super.onDestroy()
     }
