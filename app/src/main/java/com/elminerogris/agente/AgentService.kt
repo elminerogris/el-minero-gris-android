@@ -15,6 +15,10 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.location.Location
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
@@ -61,6 +65,7 @@ class AgentService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val credencialesHttp = CopyOnWriteArrayList(
         listOf(
@@ -91,9 +96,13 @@ class AgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
-            .edit().putBoolean("service_running", true).apply()
+        val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("service_running", true)
+            .putBoolean("tunnel_connected", false)
+            .apply()
         adquirirLocks()
+        registrarObservadorRed()
         startForeground(1, crearNotificacion("Monitoreando granja ASIC 24/7..."))
         scope.coroutineContext.cancelChildren()
         scope.launch { buclePrincipal() }
@@ -104,11 +113,49 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
-            .edit().putBoolean("service_running", false).apply()
+            .edit()
+            .putBoolean("service_running", false)
+            .putBoolean("tunnel_connected", false)
+            .apply()
+        desregistrarObservadorRed()
         tunnelManager?.detener()
         scope.cancel()
         liberarLocks()
         super.onDestroy()
+    }
+
+    private fun registrarObservadorRed() {
+        if (networkCallback != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val req = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    scope.launch {
+                        delay(1200L)
+                        tunnelManager?.forzarReconexion()
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+                        .edit().putBoolean("tunnel_connected", false).apply()
+                }
+            }
+            cm.registerNetworkCallback(req, cb)
+            networkCallback = cb
+        } catch (_: Exception) {}
+    }
+
+    private fun desregistrarObservadorRed() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.unregisterNetworkCallback(cb)
+        } catch (_: Exception) {}
     }
 
     private fun obtenerOCrearAgentId(prefs: SharedPreferences): String {
@@ -446,7 +493,6 @@ class AgentService : Service() {
         val agentId = obtenerOCrearAgentId(prefs)
         if (apiKey.isEmpty()) return
 
-        // Cargar credenciales personalizadas guardadas si existen
         val savedUser = prefs.getString("miner_user", "") ?: ""
         val savedPass = prefs.getString("miner_pass", "") ?: ""
         actualizarCredencialesHttp(savedUser, savedPass)
@@ -455,11 +501,16 @@ class AgentService : Service() {
         ipsConocidas.clear()
         ipsConocidas.addAll(ipsBase)
 
-        // Túnel WebSocket persistente para comandos en tiempo real (< 1s)
         tunnelManager?.detener()
-        tunnelManager = TunnelManager(scope) { ordenesInstantaneas ->
-            procesarComandos(ordenesInstantaneas, apiKey, subnet, ipsBase)
-        }
+        tunnelManager = TunnelManager(
+            scope = scope,
+            onOrdenRecibida = { ordenesInstantaneas ->
+                procesarComandos(ordenesInstantaneas, apiKey, subnet, ipsBase)
+            },
+            onEstadoCambio = { conectado ->
+                prefs.edit().putBoolean("tunnel_connected", conectado).apply()
+            }
+        )
         tunnelManager?.iniciar(apiKey, agentId)
 
         val fmtHora = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
@@ -528,9 +579,11 @@ class AgentService : Service() {
                     }
 
                     val horaStr = fmtHora.format(Date())
+                    val tunelOk = tunnelManager?.estaConectado() == true
                     prefs.edit()
                         .putInt("miners_count", resultados.size)
                         .putString("last_sync", horaStr)
+                        .putBoolean("tunnel_connected", tunelOk)
                         .apply()
                     actualizarNotificacion("En línea: ${resultados.size} minero(s) | Sede $agentId")
                     val ordenes = resp.optJSONArray("ordenes")
