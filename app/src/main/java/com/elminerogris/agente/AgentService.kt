@@ -119,6 +119,15 @@ class AgentService : Service() {
         return nuevoId
     }
 
+    private fun obtenerVersionApp(): String {
+        return try {
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            pInfo.versionName?.trim() ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     private fun adquirirLocks() {
         try {
             if (wakeLock == null) {
@@ -234,6 +243,7 @@ class AgentService : Service() {
             val marca = (Build.MANUFACTURER ?: "").trim().replaceFirstChar { it.uppercase() }
             val modelo = (Build.MODEL ?: "").trim()
             val verAndroid = Build.VERSION.RELEASE ?: ""
+            val verApp = obtenerVersionApp()
 
             info.put("device_type", if (esTvBox) "TV Box" else "Celular")
             info.put("run_mode", "APK Directo")
@@ -248,6 +258,7 @@ class AgentService : Service() {
             info.put("battery_temp_c", tempC)
             info.put("os_info", "Android $verAndroid".trim())
             info.put("android", verAndroid)
+            if (verApp.isNotEmpty()) info.put("app_version", verApp)
         } catch (_: Exception) {}
         return info
     }
@@ -485,6 +496,7 @@ class AgentService : Service() {
                 val telemetriaDev = obtenerTelemetriaCelular()
                 val routerMac = obtenerBssidWifi()
                 val gwWifi = obtenerGatewayWifi()
+                val appVer = obtenerVersionApp()
 
                 val payload = JSONObject()
                     .put("api_key", apiKey)
@@ -493,6 +505,7 @@ class AgentService : Service() {
                     .put("device", telemetriaDev)
                     .put("phone", telemetriaDev)
 
+                if (appVer.isNotEmpty()) payload.put("app_version", appVer)
                 if (routerMac.isNotEmpty()) payload.put("router_mac", routerMac)
                 if (gwWifi.isNotEmpty()) payload.put("gateway", gwWifi)
 
