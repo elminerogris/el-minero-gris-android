@@ -6,26 +6,26 @@ import android.content.Intent
 import android.os.Build
 
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val action = intent.action ?: return
-        val accionesValidas = listOf(
-            Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED,
-            "android.intent.action.QUICKBOOT_POWERON"
-        )
-        if (action !in accionesValidas) return
-
-        val prefs = context.getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
-        val apiKey = prefs.getString("api_key", "") ?: ""
-        if (apiKey.isEmpty()) return
-
-        try {
-            val serviceIntent = Intent(context, AgentService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
-        } catch (_: Exception) {}
+    override fun onReceive(context: Context, intent: Intent?) {
+        val action = intent?.action ?: return
+        if (
+            action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON"
+        ) {
+            try {
+                val prefs = context.getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+                val apiKey = prefs.getString("api_key", "")?.trim() ?: ""
+                val debeCorrer = prefs.getBoolean("service_running", false)
+                if (apiKey.isNotEmpty() && debeCorrer) {
+                    val svc = Intent(context, AgentService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(svc)
+                    } else {
+                        context.startService(svc)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
     }
 }
