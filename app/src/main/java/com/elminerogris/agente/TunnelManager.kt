@@ -19,15 +19,15 @@ import kotlin.math.min
 
 class TunnelManager(
     private val scope: CoroutineScope,
-    private val onOrdenRecibida: suspend (JSONArray) -> Unit
+    private val onOrdenRecibida: suspend (JSONArray) -> Unit,
+    private val onEstadoCambio: ((Boolean) -> Unit)? = null
 ) {
     private val client = OkHttpClient.Builder()
-        .pingInterval(25, TimeUnit.SECONDS) // Heartbeat nativo cada 25s (mantiene vivo el túnel en Render)
+        .pingInterval(25, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS) // Sin timeout de lectura para WebSocket
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
-    // Cliente exclusivo para el Proxy Web Local (Antminers + Routers con SSL autofirmado)
     private val proxyClient: OkHttpClient by lazy { crearProxyClient() }
 
     private val credencialesDigest = listOf(
@@ -47,22 +47,51 @@ class TunnelManager(
 
     private var webSocket: WebSocket? = null
     private var activo = false
+    private var conectadoWs = false
     private var reconectarJob: Job? = null
+    private var ultimaApiKey = ""
+    private var ultimoAgentId = ""
 
     private val reconnectMinMs = 3_000L
     private val reconnectMaxMs = 60_000L
     private var delayActualMs = reconnectMinMs
     private var conectadoDesdeMs = 0L
 
+    fun estaConectado(): Boolean = conectadoWs
+
+    private fun actualizarEstado(nuevoEstado: Boolean) {
+        if (conectadoWs != nuevoEstado) {
+            conectadoWs = nuevoEstado
+            try { onEstadoCambio?.invoke(nuevoEstado) } catch (_: Exception) {}
+        }
+    }
+
     fun iniciar(apiKey: String, agentId: String) {
-        if (activo || apiKey.isEmpty()) return
+        if (apiKey.isEmpty()) return
+        ultimaApiKey = apiKey
+        ultimoAgentId = agentId
+        if (activo) return
         activo = true
         delayActualMs = reconnectMinMs
         conectar(apiKey, agentId)
     }
 
+    fun forzarReconexion() {
+        if (!activo || ultimaApiKey.isEmpty()) return
+        reconectarJob?.cancel()
+        try { webSocket?.cancel() } catch (_: Exception) {}
+        webSocket = null
+        actualizarEstado(false)
+        delayActualMs = reconnectMinMs
+        reconectarJob = scope.launch {
+            delay(800L)
+            if (activo) conectar(ultimaApiKey, ultimoAgentId)
+        }
+    }
+
     fun detener() {
         activo = false
+        actualizarEstado(false)
         reconectarJob?.cancel()
         try { webSocket?.close(1000, "Agente detenido") } catch (_: Exception) {}
         webSocket = null
@@ -78,6 +107,7 @@ class TunnelManager(
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 conectadoDesdeMs = System.currentTimeMillis()
+                actualizarEstado(true)
                 ws.send(JSONObject().put("tipo", "hello").put("agent_id", agentId).toString())
             }
 
@@ -106,10 +136,12 @@ class TunnelManager(
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                actualizarEstado(false)
                 programarReconexion(apiKey, agentId)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                actualizarEstado(false)
                 programarReconexion(apiKey, agentId)
             }
         })
@@ -117,7 +149,6 @@ class TunnelManager(
 
     private fun programarReconexion(apiKey: String, agentId: String) {
         if (!activo) return
-        // Si el túnel duró más de 60s estable, reseteamos el backoff a 3s
         if (conectadoDesdeMs > 0L && (System.currentTimeMillis() - conectadoDesdeMs) > 60_000L) {
             delayActualMs = reconnectMinMs
         }
@@ -208,7 +239,6 @@ class TunnelManager(
 
             var response = proxyClient.newCall(construirRequest()).execute()
 
-            // Auto-login HTTP Digest para Antminers si el equipo pide autenticación Digest
             if (response.code == 401 && headersIn?.optString("Authorization", "").isNullOrEmpty()) {
                 val wwwAuth = response.header("WWW-Authenticate") ?: ""
                 if (wwwAuth.startsWith("Digest", ignoreCase = true)) {
