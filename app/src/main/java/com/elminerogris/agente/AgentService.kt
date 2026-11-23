@@ -1142,6 +1142,7 @@ class AgentService : Service() {
         val freqGlobal = aEntero(buscarLlave(st, listOf("frequency", "freq_avg", "freq", "total_freqavg"), 0))
 
         val ambCandidates = mutableListOf<Int>()
+        val pcbCandidates = mutableListOf<Int>()
         val stKeys = st.keys()
         while (stKeys.hasNext()) {
             val k = stKeys.next()
@@ -1149,6 +1150,9 @@ class AgentService : Service() {
             if (listOf("ambient", "env_temp", "temp_in", "inlet", "water_in", "liquid_in").any { kl.contains(it) }) {
                 val va = aEnteroMin(st.opt(k))
                 if (va in 10..60) ambCandidates.add(va)
+            } else if (listOf("temp_pic", "temp_pcb").any { kl.contains(it) }) {
+                val nums = extraerNumeros(st.opt(k)).filter { it in 10..60 }
+                if (nums.isNotEmpty()) pcbCandidates.add(nums.min())
             }
         }
 
@@ -1167,11 +1171,13 @@ class AgentService : Service() {
                 val rawAmbCh = buscarLlave(ch, listOf("ambientemp", "ambient_temp", "env_temp", "temp_in", "water_in"), null)
                 if (rawAmbCh != null) {
                     val vac = aEnteroMin(rawAmbCh)
-                    if (vac in 10..55) ambCandidates.add(vac)
+                    if (vac in 10..58) ambCandidates.add(vac)
                 } else {
-                    val numsPcb = extraerNumeros(rawPcb)
-                    if (numsPcb.size >= 2 && numsPcb.min() < (numsPcb.max() - 5) && numsPcb.min() in 15..55) {
+                    val numsPcb = extraerNumeros(rawPcb).filter { it in 10..58 }
+                    if (numsPcb.size >= 2) {
                         ambCandidates.add(numsPcb.min())
+                    } else if (numsPcb.size == 1 && tChip > 0 && numsPcb.first() <= tChip - 6) {
+                        pcbCandidates.add(numsPcb.first())
                     }
                 }
 
@@ -1193,24 +1199,27 @@ class AgentService : Service() {
 
         if (cadenas.isEmpty()) {
             for (i in 1..9) {
-                val tc = buscarLlave(st, listOf("temp2_$i", "temp3_$i", "temp_chip_$i", "temp_max_$i"))
-                val tp = buscarLlave(st, listOf("temp_$i", "temp1_$i", "temp_pcb_$i", "temp_pic_$i"))
+                val tc = buscarLlave(st, listOf("temp2_$i", "temp3_$i", "temp_chip_$i", "temp_chip$i", "temp_max_$i"))
+                val tp = buscarLlave(st, listOf("temp_$i", "temp1_$i", "temp_pcb_$i", "temp_pcb$i", "temp_pic_$i", "temp_pic$i"))
                 val acn = buscarLlave(st, listOf("chain_acn$i", "chain acn$i", "acn$i", "acn_$i", "chain_acs$i", "chain acs$i"))
                 val hwC = buscarLlave(st, listOf("chain_hw$i", "chain hw$i", "hw$i", "hw_$i"))
                 val rtC = buscarLlave(st, listOf("chain_rate$i", "chain rate$i", "rate$i", "rate_$i"))
                 val fqC = buscarLlave(st, listOf("freq_avg$i", "freq$i", "freq_$i", "chain_freq$i"), freqGlobal)
 
-                for (rawT in listOf(tp, st.opt("temp1_$i"), st.opt("temp_in_$i"), st.opt("ambientemp_$i"))) {
+                val tChip = aEntero(tc)
+                var tPcb = aEntero(tp)
+
+                for (rawT in listOf(tp, st.opt("temp1_$i"), st.opt("temp_in_$i"), st.opt("temp_in$i"), st.opt("ambientemp_$i"), st.opt("temp_pic$i"), st.opt("temp_pcb$i"))) {
                     if (rawT != null) {
-                        val numsT = extraerNumeros(rawT)
-                        if (numsT.size >= 2 && numsT.min() < (numsT.max() - 4) && numsT.min() in 15..55) {
+                        val numsT = extraerNumeros(rawT).filter { it in 10..58 }
+                        if (numsT.size >= 2) {
                             ambCandidates.add(numsT.min())
+                        } else if (numsT.size == 1 && tChip > 0 && numsT.first() <= tChip - 6) {
+                            pcbCandidates.add(numsT.first())
                         }
                     }
                 }
 
-                val tChip = aEntero(tc)
-                var tPcb = aEntero(tp)
                 var chipsNum = aEntero(acn)
                 val hwNum = aEntero(hwC)
                 val freqNum = aEntero(fqC)
@@ -1251,7 +1260,7 @@ class AgentService : Service() {
         for (c in cadenas) cadenasArr.put(c)
 
         val tm = tempsMax.maxOrNull() ?: 65
-        val tempAmb = ambCandidates.maxOrNull() ?: 0
+        val tempAmb = ambCandidates.minOrNull() ?: pcbCandidates.minOrNull() ?: 0
 
         val fans = listOf("fan1", "fan2", "fan3", "fan4")
             .mapNotNull { st.opt(it)?.toString() }
