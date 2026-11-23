@@ -38,6 +38,12 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
 
+      - name: Reparar formato PNG del icono
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          rm -f app/src/main/res/mipmap-xxxhdpi/ic_launsdfsscher.png
+          convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png PNG32:app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
       - name: Compilar APK Release firmado
         env:
           AUTO_VERSION_CODE: ${{ steps.ver.outputs.code }}
