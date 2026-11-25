@@ -1102,15 +1102,15 @@ class AgentService : Service() {
         if (tOutlet >= 120) tOutlet = 0
 
         val tm = if (tChipMax > 0) tChipMax else (if (tOutlet > 0) tOutlet else aEntero(buscarLlave(stSum, listOf("Temperature"), 65)))
-        val fan1 = aEntero(buscarLlave(stAva, listOf("Fan1", "fan1", "Fan Speed In"), 0))
-        val fan2 = aEntero(buscarLlave(stAva, listOf("Fan2", "fan2", "Fan Speed Out"), 0))
+        val fan1 = aEntero(buscarLlave(stAva, listOf("Fan1", "fan1", "Fan Speed In", "Fan Speed"), buscarLlave(stSum, listOf("Fan Speed In", "Fan1"), 0)))
+        val fan2 = aEntero(buscarLlave(stAva, listOf("Fan2", "fan2", "Fan Speed Out"), buscarLlave(stSum, listOf("Fan Speed Out", "Fan2"), 0)))
 
-        val esQ90Hydro = modeloStr.lowercase().contains("q90") || modeloStr.lowercase().contains("hyd") || modeloStr.lowercase().contains("water")
+        val esAvalonHydro = listOf("hyd", "hydro", "water", "1566ha").any { modeloStr.lowercase().contains(it) }
         val fansStr = when {
-            esQ90Hydro && tInlet > 0 && tOutlet > 0 -> "💧 Hydro (Entrada ${tInlet}°C / Salida ${tOutlet}°C · ΔT ${max(0, tOutlet - tInlet)}°C)"
-            esQ90Hydro -> "💧 Hydro (Refrigeración Líquida Activa)"
+            esAvalonHydro && tInlet > 0 && tOutlet > 0 -> "💧 Hydro (Entrada ${tInlet}°C / Salida ${tOutlet}°C · ΔT ${max(0, tOutlet - tInlet)}°C)"
+            esAvalonHydro -> "💧 Hydro (Refrigeración Líquida Activa)"
             fan1 > 0 || fan2 > 0 -> "$fan1 / $fan2 RPM"
-            else -> "0 / 0 RPM"
+            else -> "Auto / Silencioso"
         }
 
         val cadenas = JSONArray()
@@ -1561,7 +1561,7 @@ class AgentService : Service() {
         val fans = listOf("fan1", "fan2", "fan3", "fan4")
             .mapNotNull { st.opt(it)?.toString() }
             .filter { aEntero(it) > 0 }
-        val esHydro = ml.contains("hyd") || ml.contains("hydro") || ml.contains("water") || ml.contains("q90") || ml.contains("m33") || ml.contains("m53") || ml.contains("m63")
+        val esHydro = ml.contains("hyd") || ml.contains("hydro") || ml.contains("water") || ml.contains("m33") || ml.contains("m53") || ml.contains("m63") || ml.contains("1566ha")
         val fansStr = when {
             fans.isNotEmpty() && !esHydro -> fans.joinToString(" / ") + " RPM"
             esHydro || (fans.isEmpty() && hr5s > 0.0) -> {
