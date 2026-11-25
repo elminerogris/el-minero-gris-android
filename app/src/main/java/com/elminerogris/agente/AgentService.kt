@@ -808,21 +808,50 @@ class AgentService : Service() {
         return defecto
     }
 
+    private fun determinarCredencialesDefecto(marca: String, modelo: String): Triple<String, String, String> {
+        val txt = "$marca $modelo".lowercase()
+        return when {
+            listOf("avalon", "canaan", "q90", "a10", "a11", "a12", "a13", "a14", "a15", "nano").any { txt.contains(it) } ->
+                Triple("Canaan Avalon", "root", "root")
+            listOf("whatsminer", "microbt", "btminer", "m20", "m21", "m30", "m31", "m32", "m33", "m50", "m53", "m60", "m63").any { txt.contains(it) } ->
+                Triple("MicroBT WhatsMiner", "admin", "admin")
+            listOf("iceriver", "ks0", "ks1", "ks2", "ks3", "ks5").any { txt.contains(it) } ->
+                Triple("IceRiver", "admin", "12345678")
+            listOf("goldshell", "box").any { txt.contains(it) } ->
+                Triple("Goldshell", "admin", "12345678")
+            listOf("fluminer", "flux").any { txt.contains(it) } ->
+                Triple("Fluminer", "root", "root")
+            listOf("jasminer", "x4", "x16").any { txt.contains(it) } ->
+                Triple("Jasminer", "root", "root")
+            listOf("innosilicon", "t2t", "t3", "a10", "a11").any { txt.contains(it) } ->
+                Triple("Innosilicon", "admin", "admin")
+            listOf("antminer", "bitmain", "bmminer").any { txt.contains(it) } ->
+                Triple("Bitmain Antminer", "root", "root")
+            else -> Triple("ASIC Estándar", "root", "root")
+        }
+    }
+
     private fun detectarAlgoritmoYMoneda(modeloStr: String, poolUrl: String = ""): Pair<String, String> {
         val mod = modeloStr.lowercase()
         val url = poolUrl.lowercase()
+        if (listOf("flux", "zel").any { mod.contains(it) } || listOf("flux.", "zel.", "zelhash").any { url.contains(it) })
+            return Pair("ZelHash", "FLUX")
+        if (listOf("alph", "alephium").any { mod.contains(it) } || listOf("alph.", "alephium.", "blake3").any { url.contains(it) })
+            return Pair("Blake3", "ALPH")
+        if (listOf("ks3", "ks5", "ks0", "ks1", "ks2", "kheavy", "iceriver").any { mod.contains(it) } || listOf("kas.", "kaspa", "kheavy").any { url.contains(it) })
+            return Pair("kHeavyHash", "KAS")
         if (listOf("z15", "z11", "z9", "equihash").any { mod.contains(it) } || listOf("zec.", "equihash", "zen.").any { url.contains(it) })
             return Pair("Equihash", "ZEC")
-        if (listOf("l7", "l9", "l3", "scrypt").any { mod.contains(it) } || listOf("ltc.", "doge.", "scrypt").any { url.contains(it) })
+        if (listOf("l7", "l9", "l3", "scrypt", "elphapex").any { mod.contains(it) } || listOf("ltc.", "doge.", "scrypt").any { url.contains(it) })
             return Pair("Scrypt", "LTC/DOGE")
-        if (listOf("ks3", "ks5", "ks0", "ks1", "ks2", "kheavy").any { mod.contains(it) } || listOf("kas.", "kaspa", "kheavy").any { url.contains(it) })
-            return Pair("kHeavyHash", "KAS")
         if (listOf("ka3", "kd", "blake2s").any { mod.contains(it) } || listOf("kda.", "kadena").any { url.contains(it) })
             return Pair("Blake2S", "KDA")
         if (listOf("d9", "d7", "x11").any { mod.contains(it) } || listOf("dash.", "x11").any { url.contains(it) })
             return Pair("X11", "DASH")
-        if (listOf("e9", "etc", "ethash").any { mod.contains(it) } || listOf("etc.", "ethash").any { url.contains(it) })
+        if (listOf("e9", "etc", "ethash", "jasminer").any { mod.contains(it) } || listOf("etc.", "ethash", "etchash").any { url.contains(it) })
             return Pair("EtHash", "ETC")
+        if (listOf("rvn", "kawpow").any { mod.contains(it) } || listOf("rvn.", "ravencoin", "kawpow").any { url.contains(it) })
+            return Pair("KawPow", "RVN")
         if (url.contains("bch.")) return Pair("SHA-256", "BCH")
         return Pair("SHA-256", "BTC")
     }
@@ -832,11 +861,27 @@ class AgentService : Service() {
     private fun normalizarHashrateUniversal(valorBruto: Any?, unidadOrigen: String, algoritmo: String = "SHA-256"): Pair<Double, String> {
         var v = aFloat(valorBruto)
         val u = unidadOrigen.uppercase().trim()
+        if (algoritmo == "ZelHash") {
+            if (v > 1_000_000.0) return Pair(round2(v / 1_000_000.0), "MSol/s")
+            if (v > 1000.0 || u == "KSOL/S") return Pair(round2(if (v > 1000.0) v / 1000.0 else v), "kSol/s")
+            return Pair(round2(v), "Sol/s")
+        }
         if (algoritmo == "Equihash") {
             if (v > 50000.0) v /= 1000.0
             return Pair(round2(v), "kSol/s")
         }
-        if (algoritmo == "Scrypt" || algoritmo == "EtHash") {
+        if (algoritmo == "kHeavyHash") {
+            if (u == "MHS" || v > 500000.0) return Pair(round2(v / 1_000_000.0), "TH/s")
+            if (u == "GHS" || v > 1000.0) return Pair(round2(v / 1000.0), "TH/s")
+            if (v in 0.01..50.0) return Pair(round2(v), "TH/s")
+            return Pair(round2(v), "GH/s")
+        }
+        if (algoritmo == "Blake3") {
+            if (v > 500000.0) return Pair(round2(v / 1_000_000.0), "TH/s")
+            if (v > 1000.0) return Pair(round2(v / 1000.0), "GH/s")
+            return Pair(round2(v), "GH/s")
+        }
+        if (algoritmo == "Scrypt" || algoritmo == "EtHash" || algoritmo == "KawPow") {
             if (u == "MHS" || v > 500.0) v /= 1000.0
             return Pair(round2(v), "GH/s")
         }
@@ -959,9 +1004,251 @@ class AgentService : Service() {
             .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
             .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
             .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+            .put("cred_defecto", "admin / admin")
     }
 
-    // ==================== EXTRACTOR UNIVERSAL (ANTMINER + WHATSMINER) ====================
+    // ==================== EXTRACTOR CANAAN AVALON (Q90 HYDRO, A12xx-A15xx) ====================
+    private fun esAvalon(st: JSONObject, stSum: JSONObject, verResp: String): Boolean {
+        val txt = "${st.optString("Type")} ${st.optString("Miner")} ${stSum.optString("Type")} ${stSum.optString("Miner")} $verResp".lowercase()
+        if (listOf("avalon", "canaan", "ava0", "ava1", "q90", "a10", "a11", "a12", "a13", "a14", "a15", "nano").any { txt.contains(it) }) return true
+        if (st.has("AVA0") || st.has("MM Version") || st.has("DNA")) return true
+        return false
+    }
+
+    private fun extraerAvalon(ip: String, stSum: JSONObject, subnet: String): JSONObject {
+        val ahora = System.currentTimeMillis() / 1000L
+        var est = cacheInfoEstatica[ip]
+
+        val statsRaw = peticion4028(ip, "stats")
+        val stAva = JSONObject()
+        val statsArr = statsRaw?.optJSONArray("STATS")
+        if (statsArr != null) {
+            for (i in 0 until statsArr.length()) {
+                val item = statsArr.optJSONObject(i) ?: continue
+                val ks = item.keys()
+                while (ks.hasNext()) { val k = ks.next(); stAva.put(k, item.opt(k)) }
+                val ava0 = item.optJSONObject("AVA0")
+                if (ava0 != null) {
+                    val k0 = ava0.keys()
+                    while (k0.hasNext()) { val k = k0.next(); stAva.put(k, ava0.opt(k)) }
+                }
+            }
+        }
+
+        val verRaw = peticion4028(ip, "version")
+        var verStr = ""
+        var minerStr = ""
+        val vArr = verRaw?.optJSONArray("VERSION")
+        if (vArr != null && vArr.length() > 0) {
+            val vObj = vArr.optJSONObject(0)
+            verStr = vObj?.optString("CGMiner", "") ?: vObj?.optString("API", "") ?: ""
+            minerStr = vObj?.optString("Miner", "") ?: ""
+        }
+
+        if (est == null || (ahora - ((est["ts"] as? Long) ?: 0L) > 600L)) {
+            var modCand = minerStr.ifEmpty { buscarLlave(stSum, listOf("Type", "Model", "Miner"), buscarLlave(stAva, listOf("Ver", "Type", "Model"), "Avalon Q90")).toString() }.trim()
+            if (modCand.isEmpty() || modCand.lowercase() in listOf("canaan", "miner")) modCand = "Avalon Q90"
+            if (!modCand.lowercase().contains("avalon")) modCand = "Avalon $modCand".trim()
+
+            val dna = buscarLlave(stAva, listOf("DNA", "dna", "SN", "sn"), "AVA-${ip.replace(".", "")}").toString().trim()
+            val fw = verStr.ifEmpty { buscarLlave(stAva, listOf("Ver", "Firmware Version", "CGMiner"), "Canaan Avalon Firmware").toString() }.trim()
+            val mac = buscarLlave(stAva, listOf("MAC", "mac"), est?.get("mac") ?: "-").toString().trim()
+            val hostname = buscarLlave(stAva, listOf("hostname"), "Avalon${ip.substringAfterLast(".")}").toString().trim()
+
+            est = mutableMapOf(
+                "ts" to ahora, "marca" to "Avalon", "modelo" to modCand, "mac" to mac,
+                "serial" to dna, "fw" to fw, "hostname" to hostname, "net_proto" to "Static",
+                "netmask" to "255.255.255.0", "gateway" to "$subnet.1", "dns" to "8.8.8.8"
+            )
+            cacheInfoEstatica[ip] = est
+        }
+
+        val modeloStr = est["modelo"].toString()
+        val pl = peticion4028(ip, "pools")?.optJSONArray("POOLS") ?: JSONArray()
+        fun datosPool(idx: Int): List<Any> {
+            val p = if (idx < pl.length()) pl.optJSONObject(idx) else null
+            if (p != null) {
+                val url = buscarLlave(p, listOf("URL", "url"), "").toString()
+                val usr = buscarLlave(p, listOf("User", "user"), "").toString()
+                val pas = buscarLlave(p, listOf("Pass", "pass"), "123").toString()
+                val stP = buscarLlave(p, listOf("Status", "status"), if (url.isNotEmpty()) "Alive" else "Dead").toString()
+                val acc = aEntero(buscarLlave(p, listOf("Accepted", "accepted"), 0))
+                val rej = aEntero(buscarLlave(p, listOf("Rejected", "rejected"), 0))
+                return listOf(url, usr, pas, stP, acc, rej)
+            }
+            return listOf("", "", "123", "Dead", 0, 0)
+        }
+        val p1 = datosPool(0); val p2 = datosPool(1); val p3 = datosPool(2)
+        val (algoritmo, moneda) = detectarAlgoritmoYMoneda(modeloStr, p1[0].toString())
+
+        val raw5s = buscarLlave(stSum, listOf("GHS 5s", "MHS 5s", "HS 5s", "rate_5s"), 0)
+        val rawAvg = buscarLlave(stSum, listOf("GHS av", "MHS av", "HS av"), raw5s)
+        val uOrig = if (stSum.has("GHS 5s") || stSum.has("GHS av")) "GHS" else "MHS"
+        val (hr5s, unidadHr) = normalizarHashrateUniversal(raw5s, uOrig, algoritmo)
+        var (hr30m, _) = normalizarHashrateUniversal(rawAvg, uOrig, algoritmo)
+        if (hr30m == 0.0) hr30m = hr5s
+
+        var cw = aFloat(buscarLlave(stSum, listOf("Power", "Power Limit"), buscarLlave(stAva, listOf("Power", "power"), 0)))
+        if (cw < 100.0 && hr5s > 0.0) cw = hr5s * 32.0 else if (hr5s == 0.0) cw = 100.0
+
+        val uptimeStr = formatearUptime(buscarLlave(stSum, listOf("Elapsed", "Uptime"), 0))
+        val erroresHw = aEntero(buscarLlave(stSum, listOf("Hardware Errors"), 0))
+
+        var tInlet = aEntero(buscarLlave(stAva, listOf("ITemp", "Temp_Inlet", "Inlet Temp"), 0))
+        var tOutlet = aEntero(buscarLlave(stAva, listOf("OTemp", "Temp_Outlet", "Outlet Temp"), 0))
+        var tChipMax = aEntero(buscarLlave(stAva, listOf("TMax", "Temp_Max", "Chip Temp Max"), 0))
+        if (tChipMax >= 150) tChipMax = 0
+        if (tInlet >= 120) tInlet = 0
+        if (tOutlet >= 120) tOutlet = 0
+
+        val tm = if (tChipMax > 0) tChipMax else (if (tOutlet > 0) tOutlet else aEntero(buscarLlave(stSum, listOf("Temperature"), 65)))
+        val fan1 = aEntero(buscarLlave(stAva, listOf("Fan1", "fan1", "Fan Speed In"), 0))
+        val fan2 = aEntero(buscarLlave(stAva, listOf("Fan2", "fan2", "Fan Speed Out"), 0))
+
+        val esQ90Hydro = modeloStr.lowercase().contains("q90") || modeloStr.lowercase().contains("hyd") || modeloStr.lowercase().contains("water")
+        val fansStr = when {
+            esQ90Hydro && tInlet > 0 && tOutlet > 0 -> "💧 Hydro (Entrada ${tInlet}°C / Salida ${tOutlet}°C · ΔT ${max(0, tOutlet - tInlet)}°C)"
+            esQ90Hydro -> "💧 Hydro (Refrigeración Líquida Activa)"
+            fan1 > 0 || fan2 > 0 -> "$fan1 / $fan2 RPM"
+            else -> "0 / 0 RPM"
+        }
+
+        val cadenas = JSONArray()
+        for (i in 0 until 3) {
+            cadenas.put(JSONObject()
+                .put("id", i + 1).put("temp_c", tm).put("temp_p", if (tOutlet > 0) tOutlet else max(0, tm - 8))
+                .put("chips", 120).put("hw", if (erroresHw > 0) erroresHw / 3 else 0).put("freq", 450)
+                .put("hr", if (hr5s > 0.0) round2(hr5s / 3.0) else 0.0))
+        }
+
+        return JSONObject()
+            .put("ip", ip).put("marca", "Avalon").put("modelo", modeloStr)
+            .put("algoritmo", algoritmo).put("moneda", moneda).put("unidad", unidadHr)
+            .put("hashrate", hr5s).put("hashrate_30m", hr30m)
+            .put("temp", tm).put("temp_amb", tInlet).put("consumo", cw.roundToInt()).put("errores", erroresHw)
+            .put("fans", fansStr).put("mac", est["mac"]).put("serial", est["serial"]).put("firmware", est["fw"])
+            .put("cadenas", cadenas).put("uptime", uptimeStr)
+            .put("hostname", est["hostname"]).put("net_proto", est["net_proto"])
+            .put("netmask", est["netmask"]).put("gateway", est["gateway"]).put("dns", est["dns"])
+            .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
+            .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
+            .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+            .put("cred_defecto", "root / root")
+    }
+
+    // ==================== EXTRACTOR FLUMINER / ALTCOINS / ASICS UNIVERSALES ====================
+    private fun esFluminerOAltcoin(st: JSONObject, stSum: JSONObject, verResp: String): Boolean {
+        val txt = "${st.optString("Type")} ${st.optString("Miner")} ${stSum.optString("Type")} ${stSum.optString("Miner")} $verResp".lowercase()
+        return listOf("fluminer", "flux", "iceriver", "goldshell", "jasminer", "innosilicon", "desiwe", "elphapex").any { txt.contains(it) }
+    }
+
+    private fun extraerFluminerOGenerico(ip: String, st: JSONObject, stSum: JSONObject, subnet: String): JSONObject {
+        val ahora = System.currentTimeMillis() / 1000L
+        var est = cacheInfoEstatica[ip]
+
+        val verRaw = peticion4028(ip, "version")
+        var verStr = ""
+        var minerStr = ""
+        val vArr = verRaw?.optJSONArray("VERSION")
+        if (vArr != null && vArr.length() > 0) {
+            val vObj = vArr.optJSONObject(0)
+            verStr = vObj?.optString("CGMiner", "") ?: vObj?.optString("API", "") ?: ""
+            minerStr = vObj?.optString("Miner", "") ?: ""
+        }
+
+        val pl = peticion4028(ip, "pools")?.optJSONArray("POOLS") ?: JSONArray()
+        fun datosPool(idx: Int): List<Any> {
+            val p = if (idx < pl.length()) pl.optJSONObject(idx) else null
+            if (p != null) {
+                val url = buscarLlave(p, listOf("URL", "url"), "").toString()
+                val usr = buscarLlave(p, listOf("User", "user"), "").toString()
+                val pas = buscarLlave(p, listOf("Pass", "pass"), "123").toString()
+                val stP = buscarLlave(p, listOf("Status", "status"), if (url.isNotEmpty()) "Alive" else "Dead").toString()
+                val acc = aEntero(buscarLlave(p, listOf("Accepted", "accepted"), 0))
+                val rej = aEntero(buscarLlave(p, listOf("Rejected", "rejected"), 0))
+                return listOf(url, usr, pas, stP, acc, rej)
+            }
+            return listOf("", "", "123", "Dead", 0, 0)
+        }
+        val p1 = datosPool(0); val p2 = datosPool(1); val p3 = datosPool(2)
+
+        val candTxt = "$minerStr ${buscarLlave(st, listOf("Type", "Model", "Miner"), "")} ${buscarLlave(stSum, listOf("Type", "Model"), "")} ${p1[0]}".lowercase()
+        val marca = when {
+            candTxt.contains("fluminer") || candTxt.contains("flux") -> "Fluminer"
+            candTxt.contains("iceriver") || candTxt.contains("ks") -> "IceRiver"
+            candTxt.contains("goldshell") -> "Goldshell"
+            candTxt.contains("jasminer") -> "Jasminer"
+            candTxt.contains("innosilicon") -> "Innosilicon"
+            else -> "ASIC Universal"
+        }
+
+        if (est == null || (ahora - ((est["ts"] as? Long) ?: 0L) > 600L)) {
+            val modDet = minerStr.ifEmpty { buscarLlave(st, listOf("Type", "Model", "Miner"), buscarLlave(stSum, listOf("Type", "Model"), "$marca ASIC")).toString() }.trim()
+            val serial = buscarLlave(st, listOf("Serial", "sn", "DNA"), "${marca.take(3).uppercase()}-${ip.replace(".", "")}").toString().trim()
+            val fw = verStr.ifEmpty { buscarLlave(st, listOf("Firmware Version", "CGMiner"), "$marca Firmware").toString() }.trim()
+            val mac = buscarLlave(st, listOf("mac", "MAC"), est?.get("mac") ?: "-").toString().trim()
+            val hostname = buscarLlave(st, listOf("hostname"), "$marca${ip.substringAfterLast(".")}").toString().trim()
+
+            est = mutableMapOf(
+                "ts" to ahora, "marca" to marca, "modelo" to modDet, "mac" to mac,
+                "serial" to serial, "fw" to fw, "hostname" to hostname, "net_proto" to "Static",
+                "netmask" to "255.255.255.0", "gateway" to "$subnet.1", "dns" to "8.8.8.8"
+            )
+            cacheInfoEstatica[ip] = est
+        }
+
+        val modeloStr = est["modelo"].toString()
+        val (algoritmo, moneda) = detectarAlgoritmoYMoneda(modeloStr, p1[0].toString())
+
+        val raw5s = buscarLlave(stSum, listOf("HS 5s", "GHS 5s", "MHS 5s", "rate_5s", "KHS 5s"), buscarLlave(st, listOf("GHS 5s", "MHS 5s", "HS 5s"), 0))
+        val rawAvg = buscarLlave(stSum, listOf("HS av", "GHS av", "MHS av", "rate_avg"), raw5s)
+        var uOrig = "MHS"
+        if (stSum.has("GHS 5s") || stSum.has("GHS av")) uOrig = "GHS"
+        else if (stSum.has("THS 5s") || stSum.has("THS rt")) uOrig = "THS"
+        else if (stSum.has("KHS 5s")) uOrig = "KHS"
+
+        val (hr5s, unidadHr) = normalizarHashrateUniversal(raw5s, uOrig, algoritmo)
+        var (hr30m, _) = normalizarHashrateUniversal(rawAvg, uOrig, algoritmo)
+        if (hr30m == 0.0) hr30m = hr5s
+
+        var cw = aFloat(buscarLlave(stSum, listOf("Power", "Power Limit"), buscarLlave(st, listOf("Power", "power"), 0)))
+        if (cw < 50.0 && hr5s > 0.0) cw = hr5s * (if (unidadHr.contains("TH")) 30.0 else 1.2)
+
+        val uptimeStr = formatearUptime(buscarLlave(stSum, listOf("Elapsed", "Uptime"), 0))
+        val erroresHw = aEntero(buscarLlave(stSum, listOf("Hardware Errors"), 0))
+
+        var tm = aEntero(buscarLlave(st, listOf("Temperature", "Chip Temp Max", "temp_max"), buscarLlave(stSum, listOf("Temperature", "Chip Temp Max"), 60)))
+        if (tm >= 150) tm = 0
+        var tAmb = aEntero(buscarLlave(st, listOf("Env Temp", "temp_pcb", "Inlet Temp"), 0))
+        if (tAmb >= 120) tAmb = 0
+
+        val fan1 = aEntero(buscarLlave(st, listOf("Fan Speed In", "Fan1", "fan1"), 0))
+        val fan2 = aEntero(buscarLlave(st, listOf("Fan Speed Out", "Fan2", "fan2"), 0))
+        val fansStr = if (fan1 > 0 || fan2 > 0) "$fan1 / $fan2 RPM" else "Auto / Normal"
+
+        val cadenas = JSONArray()
+        cadenas.put(JSONObject()
+            .put("id", 1).put("temp_c", tm).put("temp_p", max(0, tm - 8))
+            .put("chips", 60).put("hw", erroresHw).put("freq", 0).put("hr", hr5s))
+
+        val (_, credUser, credPass) = determinarCredencialesDefecto(marca, modeloStr)
+
+        return JSONObject()
+            .put("ip", ip).put("marca", marca).put("modelo", modeloStr)
+            .put("algoritmo", algoritmo).put("moneda", moneda).put("unidad", unidadHr)
+            .put("hashrate", hr5s).put("hashrate_30m", hr30m)
+            .put("temp", tm).put("temp_amb", tAmb).put("consumo", cw.roundToInt()).put("errores", erroresHw)
+            .put("fans", fansStr).put("mac", est["mac"]).put("serial", est["serial"]).put("firmware", est["fw"])
+            .put("cadenas", cadenas).put("uptime", uptimeStr)
+            .put("hostname", est["hostname"]).put("net_proto", est["net_proto"])
+            .put("netmask", est["netmask"]).put("gateway", est["gateway"]).put("dns", est["dns"])
+            .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
+            .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
+            .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+            .put("cred_defecto", "$credUser / $credPass")
+    }
+
+    // ==================== EXTRACTOR UNIVERSAL ====================
     private fun extraerTodo(ip: String, subnet: String): JSONObject? {
         val summary = peticion4028(ip, "summary")
         var stSum = JSONObject()
@@ -972,6 +1259,9 @@ class AgentService : Service() {
 
         if (stSum.length() > 0 && esWhatsminer(JSONObject(), stSum, summary?.optString("STATUS", "") ?: "")) {
             return extraerWhatsminer(ip, stSum, subnet)
+        }
+        if (stSum.length() > 0 && esAvalon(JSONObject(), stSum, summary?.optString("STATUS", "") ?: "")) {
+            return extraerAvalon(ip, stSum, subnet)
         }
 
         val stats = peticion4028(ip, "stats")
@@ -990,6 +1280,12 @@ class AgentService : Service() {
 
         if ((st.length() > 0 || stSum.length() > 0) && esWhatsminer(st, stSum, "")) {
             return extraerWhatsminer(ip, stSum, subnet)
+        }
+        if ((st.length() > 0 || stSum.length() > 0) && esAvalon(st, stSum, "")) {
+            return extraerAvalon(ip, stSum, subnet)
+        }
+        if ((st.length() > 0 || stSum.length() > 0) && esFluminerOAltcoin(st, stSum, "")) {
+            return extraerFluminerOGenerico(ip, st, stSum, subnet)
         }
 
         if (st.length() == 0 && stSum.length() == 0) {
@@ -1265,7 +1561,7 @@ class AgentService : Service() {
         val fans = listOf("fan1", "fan2", "fan3", "fan4")
             .mapNotNull { st.opt(it)?.toString() }
             .filter { aEntero(it) > 0 }
-        val esHydro = ml.contains("hyd") || ml.contains("hydro") || ml.contains("water")
+        val esHydro = ml.contains("hyd") || ml.contains("hydro") || ml.contains("water") || ml.contains("q90") || ml.contains("m33") || ml.contains("m53") || ml.contains("m63")
         val fansStr = when {
             fans.isNotEmpty() && !esHydro -> fans.joinToString(" / ") + " RPM"
             esHydro || (fans.isEmpty() && hr5s > 0.0) -> {
@@ -1287,6 +1583,7 @@ class AgentService : Service() {
             .put("pool1", p1[0]).put("worker1", p1[1]).put("pass1", p1[2]).put("status1", p1[3]).put("acc1", p1[4]).put("rej1", p1[5])
             .put("pool2", p2[0]).put("worker2", p2[1]).put("pass2", p2[2]).put("status2", p2[3]).put("acc2", p2[4]).put("rej2", p2[5])
             .put("pool3", p3[0]).put("worker3", p3[1]).put("pass3", p3[2]).put("status3", p3[3]).put("acc3", p3[4]).put("rej3", p3[5])
+            .put("cred_defecto", "root / root")
     }
 
     // ==================== ESCANEO DE RED CON SEMÁFORO Y MUTEX ====================
@@ -1298,8 +1595,15 @@ class AgentService : Service() {
                     netSemaphore.withPermit {
                         val ip = "$subnet.$i"
                         try {
-                            Socket().use { s -> s.connect(InetSocketAddress(ip, 4028), 600) }
-                            ip
+                            var found = false
+                            for (port in listOf(4028, 80)) {
+                                try {
+                                    Socket().use { s -> s.connect(InetSocketAddress(ip, port), 450) }
+                                    found = true
+                                    break
+                                } catch (_: Exception) {}
+                            }
+                            if (found) ip else null
                         } catch (_: Exception) { null }
                     }
                 }
