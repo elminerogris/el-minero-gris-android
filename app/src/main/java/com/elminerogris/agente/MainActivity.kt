@@ -624,11 +624,22 @@ class MainActivity : AppCompatActivity() {
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                     val url = request?.url?.toString() ?: return false
+                    val urlLower = url.lowercase()
+                    if (urlLower.contains("/descargar") || urlLower.endsWith(".apk") || urlLower.endsWith(".zip") || urlLower.contains("github.com")) {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            })
+                            return true
+                        } catch (_: Exception) {}
+                    }
                     if (url.startsWith("https://elminerogris.com") || url.startsWith("http://elminerogris.com")) {
                         return false
                     }
                     try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
                     } catch (_: Exception) {}
                     return true
                 }
@@ -651,6 +662,15 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         webProgressBar.visibility = View.VISIBLE
                     }
+                }
+            }
+            setDownloadListener { url, _, _, _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                } catch (_: Exception) {
+                    Toast.makeText(this@MainActivity, "No se pudo iniciar la descarga", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -2594,9 +2614,9 @@ class MainActivity : AppCompatActivity() {
         try {
             val esBeta = packageName.endsWith(".beta")
             val url = if (esBeta) {
-                "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris-Beta.apk"
+                "https://github.com/elminerogris/el-minero-gris-android/releases/download/latest/ElMineroGris-Beta.apk"
             } else {
-                if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
+                if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else "https://github.com/elminerogris/el-minero-gris-android/releases/download/latest/ElMineroGris.apk"
             }
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
