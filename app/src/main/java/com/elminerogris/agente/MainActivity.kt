@@ -625,6 +625,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     webProgressBar.visibility = View.GONE
+                    sincronizarSesionDesdeWeb()
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -719,7 +720,10 @@ class MainActivity : AppCompatActivity() {
         bottomNav.addView(tabBtnAgente)
 
         tabBtnPanel.setOnClickListener { cambiarTab(0) }
-        tabBtnAgente.setOnClickListener { cambiarTab(1) }
+        tabBtnAgente.setOnClickListener {
+            sincronizarSesionDesdeWeb()
+            cambiarTab(1)
+        }
 
         val mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1119,6 +1123,55 @@ class MainActivity : AppCompatActivity() {
             txtTabPanel.setTypeface(null, Typeface.NORMAL)
             txtTabAgente.setTextColor(Color.parseColor("#3B82F6"))
             txtTabAgente.setTypeface(null, Typeface.BOLD)
+        }
+    }
+
+    private fun sincronizarSesionDesdeWeb() {
+        val cookies = CookieManager.getInstance().getCookie("https://elminerogris.com") ?: ""
+        if (!cookies.contains("session=")) return
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val conn = (URL("https://elminerogris.com/api/agente/mi_sesion").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("Cookie", cookies)
+                    setRequestProperty("User-Agent", "ElMineroGris-AndroidApp/1.0")
+                }
+                if (conn.responseCode == 200) {
+                    val jsonStr = conn.inputStream.bufferedReader().readText()
+                    val resp = JSONObject(jsonStr)
+                    if (resp.optBoolean("ok", false)) {
+                        val u = resp.optString("username", "").trim()
+                        val k = resp.optString("api_key", "").trim()
+                        val sub = resp.optString("subnet", "192.168.0").trim()
+                        val mUser = resp.optString("miner_user", "").trim()
+                        val mPass = resp.optString("miner_pass", "").trim()
+
+                        if (u.isNotEmpty() && k.isNotEmpty()) {
+                            val prefs = getSharedPreferences("emg_prefs", Context.MODE_PRIVATE)
+                            val uGuardado = prefs.getString("username", "") ?: ""
+                            val kGuardada = prefs.getString("api_key", "") ?: ""
+
+                            if (u != uGuardado || k != kGuardada) {
+                                val ed = prefs.edit()
+                                    .putString("username", u)
+                                    .putString("api_key", k)
+                                    .putString("subnet", sub)
+                                if (mUser.isNotEmpty()) ed.putString("miner_user", mUser)
+                                if (mPass.isNotEmpty()) ed.putString("miner_pass", mPass)
+                                ed.apply()
+
+                                withContext(Dispatchers.Main) {
+                                    mostrandoFormularioLogin = false
+                                    actualizarTodoUI()
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
         }
     }
 
