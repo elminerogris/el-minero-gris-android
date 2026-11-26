@@ -1878,12 +1878,11 @@ class MainActivity : AppCompatActivity() {
     private fun iniciarFlujoActualizacion() {
         try {
             val esBeta = packageName.endsWith(".beta")
-            val defaultUrl = if (esBeta) {
+            val url = if (esBeta) {
                 "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris-Beta.apk"
             } else {
-                "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
+                if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
             }
-            val url = if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else defaultUrl
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
@@ -1895,7 +1894,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun obtenerVersionNube(): JSONObject? {
         return try {
-            val conn = (URL(urlVersion).openConnection() as HttpURLConnection).apply {
+            val esBeta = packageName.endsWith(".beta")
+            val endpoint = if (esBeta) "$urlVersion?channel=beta" else urlVersion
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 6000
                 readTimeout = 6000
