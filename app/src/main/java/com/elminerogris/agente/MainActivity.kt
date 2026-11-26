@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -17,7 +18,14 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.*
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -49,6 +57,18 @@ class MainActivity : AppCompatActivity() {
     private var actualizandoSwitchInterno = false
     private var esperandoPermisoInstalacion = false
     private var descargandoApk = false
+
+    // Componentes del Panel Web y Navegación
+    private lateinit var webView: WebView
+    private lateinit var webProgressBar: ProgressBar
+    private lateinit var panelLayout: FrameLayout
+    private lateinit var scrollAgente: ScrollView
+    private lateinit var tabBtnPanel: LinearLayout
+    private lateinit var tabBtnAgente: LinearLayout
+    private lateinit var txtTabPanel: TextView
+    private lateinit var txtTabAgente: TextView
+    private lateinit var dotAgente: View
+    private var tabActual: Int = 0
 
     private lateinit var cardBanner: LinearLayout
     private lateinit var txtBadgeEstado: TextView
@@ -498,7 +518,7 @@ class MainActivity : AppCompatActivity() {
 
         // ==================== 9. ACCESOS RÁPIDOS Y DIAGNÓSTICO ====================
         val btnAbrirWeb = Button(this).apply {
-            text = "🌐   Abrir Panel Web (elminerogris.com)"
+            text = "📊   Ver Panel Web en la App"
             isAllCaps = false
             textSize = 14f
             setTypeface(null, Typeface.BOLD)
@@ -539,7 +559,197 @@ class MainActivity : AppCompatActivity() {
         root.addView(btnActualizar)
 
         scroll.addView(root)
-        setContentView(scroll)
+        scrollAgente = scroll
+        scrollAgente.layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+
+        // ==================== PANEL WEB (WEBVIEW A PANTALLA COMPLETA) ====================
+        panelLayout = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.parseColor("#0A0C12"))
+        }
+
+        webProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = false
+            max = 100
+            progress = 0
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                3.dp()
+            ).apply { gravity = Gravity.TOP }
+            progressDrawable = GradientDrawable().apply {
+                setColor(Color.parseColor("#3B82F6"))
+            }
+        }
+
+        webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.parseColor("#0A0C12"))
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                builtInZoomControls = false
+                displayZoomControls = false
+                setSupportZoom(true)
+                cacheMode = WebSettings.LOAD_DEFAULT
+                userAgentString = "$userAgentString ElMineroGris-AndroidApp/1.0"
+            }
+            CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(this@apply, true)
+            }
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val url = request?.url?.toString() ?: return false
+                    if (url.startsWith("https://elminerogris.com") || url.startsWith("http://elminerogris.com")) {
+                        return false
+                    }
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } catch (_: Exception) {}
+                    return true
+                }
+
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    webProgressBar.progress = 15
+                    webProgressBar.visibility = View.VISIBLE
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    webProgressBar.visibility = View.GONE
+                }
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    webProgressBar.progress = newProgress
+                    if (newProgress >= 100) {
+                        webProgressBar.visibility = View.GONE
+                    } else {
+                        webProgressBar.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }
+
+        panelLayout.addView(webView)
+        panelLayout.addView(webProgressBar)
+
+        val contentFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            addView(panelLayout)
+            addView(scrollAgente)
+        }
+
+        // ==================== BARRA DE NAVEGACIÓN INFERIOR ====================
+        val bottomNav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#0D111A"))
+            val borderTop = GradientDrawable().apply {
+                setColor(Color.parseColor("#0D111A"))
+                setStroke(1.dp(), Color.parseColor("#1E293B"))
+            }
+            background = borderTop
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                58.dp()
+            )
+        }
+
+        tabBtnPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+            isClickable = true
+            isFocusable = true
+        }
+
+        txtTabPanel = TextView(this).apply {
+            text = "📊  Panel Web"
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#3B82F6"))
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        tabBtnPanel.addView(txtTabPanel)
+
+        tabBtnAgente = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+            isClickable = true
+            isFocusable = true
+        }
+
+        val agenteRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        dotAgente = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(8.dp(), 8.dp()).apply {
+                rightMargin = 6.dp()
+            }
+            background = fondo("#64748B", 999)
+        }
+
+        txtTabAgente = TextView(this).apply {
+            text = "📡  Agente Wi-Fi"
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#94A3B8"))
+            gravity = Gravity.CENTER
+        }
+
+        agenteRow.addView(dotAgente)
+        agenteRow.addView(txtTabAgente)
+        tabBtnAgente.addView(agenteRow)
+
+        bottomNav.addView(tabBtnPanel)
+        bottomNav.addView(tabBtnAgente)
+
+        tabBtnPanel.setOnClickListener { cambiarTab(0) }
+        tabBtnAgente.setOnClickListener { cambiarTab(1) }
+
+        val mainLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0A0C12"))
+            addView(contentFrame)
+            addView(bottomNav)
+        }
+
+        setContentView(mainLayout)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (tabActual == 0 && webView.canGoBack()) {
+                    webView.goBack()
+                } else if (tabActual == 1) {
+                    cambiarTab(0)
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
+
+        webView.loadUrl(urlPanel)
+        cambiarTab(0)
 
         // ==================== EVENTOS ====================
         switchModo247.setOnCheckedChangeListener { _, isChecked ->
@@ -651,7 +861,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnAbrirWeb.setOnClickListener {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlPanel)))
+            cambiarTab(0)
         }
 
         btnDiagnostico.setOnClickListener {
@@ -890,6 +1100,39 @@ class MainActivity : AppCompatActivity() {
         } else {
             txtEstadoClima.text = "○ Desactivado — Usando clima aproximado por ciudad"
             txtEstadoClima.setTextColor(Color.parseColor("#64748B"))
+        }
+
+        if (::dotAgente.isInitialized) {
+            dotAgente.background = if (running) {
+                GradientDrawable().apply {
+                    setColor(Color.parseColor("#10B981"))
+                    cornerRadius = 999f
+                }
+            } else {
+                GradientDrawable().apply {
+                    setColor(Color.parseColor("#64748B"))
+                    cornerRadius = 999f
+                }
+            }
+        }
+    }
+
+    private fun cambiarTab(nuevoTab: Int) {
+        tabActual = nuevoTab
+        if (nuevoTab == 0) {
+            panelLayout.visibility = View.VISIBLE
+            scrollAgente.visibility = View.GONE
+            txtTabPanel.setTextColor(Color.parseColor("#3B82F6"))
+            txtTabPanel.setTypeface(null, Typeface.BOLD)
+            txtTabAgente.setTextColor(Color.parseColor("#94A3B8"))
+            txtTabAgente.setTypeface(null, Typeface.NORMAL)
+        } else {
+            panelLayout.visibility = View.GONE
+            scrollAgente.visibility = View.VISIBLE
+            txtTabPanel.setTextColor(Color.parseColor("#94A3B8"))
+            txtTabPanel.setTypeface(null, Typeface.NORMAL)
+            txtTabAgente.setTextColor(Color.parseColor("#3B82F6"))
+            txtTabAgente.setTypeface(null, Typeface.BOLD)
         }
     }
 

@@ -44,23 +44,30 @@ jobs:
           rm -f app/src/main/res/mipmap-xxxhdpi/ic_launsdfsscher.png
           convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png PNG32:app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-      - name: Compilar APK Release firmado
+      - name: Compilar APK y Bundle AAB Release firmados
         env:
           AUTO_VERSION_CODE: ${{ steps.ver.outputs.code }}
           AUTO_VERSION_NAME: ${{ steps.ver.outputs.name }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle assembleRelease
+        run: |
+          gradle assembleRelease
+          gradle bundleRelease
 
-      - name: Renombrar APK
-        run: cp app/build/outputs/apk/release/app-release.apk ElMineroGris-Agente.apk
+      - name: Renombrar artefactos de lanzamiento
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk ElMineroGris.apk
+          cp app/build/outputs/bundle/release/app-release.aab ElMineroGris.aab
+          cp ElMineroGris.apk ElMineroGris-Agente.apk
 
-      - name: Publicar en GitHub Releases (APK + version.json)
+      - name: Publicar en GitHub Releases (APK + AAB Google Play + version.json)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: El Minero Gris - Agente Android
+          name: El Minero Gris - App Android
           files: |
+            ElMineroGris.apk
+            ElMineroGris.aab
             ElMineroGris-Agente.apk
             version.json
