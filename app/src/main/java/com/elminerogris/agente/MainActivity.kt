@@ -6,7 +6,14 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -17,6 +24,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -62,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var panelLayout: FrameLayout
     private lateinit var scrollAgente: ScrollView
     private lateinit var scrollInicioViaBTC: ScrollView
+    private lateinit var scrollPoolViaBTC: ScrollView
     private lateinit var tabBtnInicio: LinearLayout
     private lateinit var tabBtnPanel: LinearLayout
     private lateinit var tabBtnMineros: LinearLayout
@@ -650,6 +659,7 @@ class MainActivity : AppCompatActivity() {
         panelLayout.addView(webProgressBar)
 
         scrollInicioViaBTC = crearVistaInicioViaBTC(dp)
+        scrollPoolViaBTC = crearVistaPoolMineria(dp)
 
         val contentFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -658,6 +668,7 @@ class MainActivity : AppCompatActivity() {
                 1f
             )
             addView(scrollInicioViaBTC)
+            addView(scrollPoolViaBTC)
             addView(panelLayout)
             addView(scrollAgente)
         }
@@ -708,7 +719,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val (t0, txt0) = crearTabItem("🏠", "Inicio", 0)
-        val (t1, txt1) = crearTabItem("🌐", "Pool de minería", 1)
+        val (t1, txt1) = crearTabItem("📈", "Pool de minería", 1)
         val (t2, txt2) = crearTabItem("⛏️", "Mineros", 2)
         val (t3, txt3) = crearTabItem("💼", "Activos", 3)
 
@@ -740,7 +751,7 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if ((tabActual == 1 || tabActual == 2) && webView.canGoBack()) {
+                if (tabActual == 2 && webView.canGoBack()) {
                     webView.goBack()
                 } else if (tabActual != 0) {
                     cambiarTab(0)
@@ -1111,17 +1122,251 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private data class MonedaRow(
-        val ticker: String,
+    // ==================== COMPONENTE DE GRÁFICO NATIVO DE HASHRATE ====================
+    private class GraficoHashrateView(context: Context) : View(context) {
+        private val dp = resources.displayMetrics.density
+        private fun Float.dp(): Float = this * dp
+        private fun Int.dp(): Int = (this * dp).toInt()
+
+        private var puntos: List<Float> = listOf(
+            338f, 341f, 339f, 344f, 347f, 345f, 350f, 348f, 353f, 351f, 348f, 352f,
+            354f, 351f, 349f, 346f, 350f, 353f, 351f, 354f, 355f, 352f, 349f, 348.5f
+        )
+        private var etiquetasX: List<String> = listOf("00:00", "04:00", "08:00", "12:00", "16:00", "20:00", "Ahora")
+        private var indiceTocado: Int? = null
+
+        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#00C4B4")
+            strokeWidth = 2.8f.dp()
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#EEF2F6")
+            strokeWidth = 1f.dp()
+            style = Paint.Style.STROKE
+        }
+
+        private val avgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#F59E0B")
+            strokeWidth = 1.4f.dp()
+            style = Paint.Style.STROKE
+            pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+        }
+
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#848E9C")
+            textSize = 10f.dp()
+        }
+
+        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#00C4B4")
+            style = Paint.Style.FILL
+        }
+
+        private val dotInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+
+        private val tooltipBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#1E2329")
+            style = Paint.Style.FILL
+        }
+
+        private val tooltipText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 11.5f.dp()
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+        private val path = Path()
+        private val fillPath = Path()
+
+        fun setRango(rango: String) {
+            indiceTocado = null
+            puntos = when (rango) {
+                "1h" -> listOf(346f, 347.5f, 349f, 348f, 350.2f, 351.5f, 350f, 349.8f, 352f, 351f, 349.5f, 348.5f)
+                "24h" -> listOf(
+                    338f, 341f, 339f, 344f, 347f, 345f, 350f, 348f, 353f, 351f, 348f, 352f,
+                    354f, 351f, 349f, 346f, 350f, 353f, 351f, 354f, 355f, 352f, 349f, 348.5f
+                )
+                "7d" -> listOf(332f, 339f, 343f, 346f, 345f, 351f, 348.5f)
+                "30d" -> listOf(310f, 318f, 325f, 330f, 334f, 338f, 342f, 340f, 345f, 347f, 346f, 350f, 352f, 349f, 348.5f)
+                else -> puntos
+            }
+            etiquetasX = when (rango) {
+                "1h" -> listOf("-60m", "-45m", "-30m", "-15m", "Ahora")
+                "24h" -> listOf("00:00", "04:00", "08:00", "12:00", "16:00", "20:00", "Ahora")
+                "7d" -> listOf("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Hoy")
+                "30d" -> listOf("Día 1", "Día 7", "Día 14", "Día 21", "Hoy")
+                else -> etiquetasX
+            }
+            invalidate()
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    val padLeft = 14f.dp()
+                    val padRight = 14f.dp()
+                    val usableWidth = width - padLeft - padRight
+                    if (usableWidth > 0 && puntos.size > 1) {
+                        val step = usableWidth / (puntos.size - 1)
+                        val relX = (event.x - padLeft).coerceIn(0f, usableWidth)
+                        indiceTocado = (relX / step).toInt().coerceIn(0, puntos.size - 1)
+                        invalidate()
+                        return true
+                    }
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (puntos.isEmpty() || width <= 0 || height <= 0) return
+
+            val padLeft = 14f.dp()
+            val padRight = 14f.dp()
+            val padTop = 26f.dp()
+            val padBottom = 28f.dp()
+
+            val chartWidth = width - padLeft - padRight
+            val chartHeight = height - padTop - padBottom
+
+            val minVal = (puntos.minOrNull() ?: 300f) * 0.96f
+            val maxVal = (puntos.maxOrNull() ?: 400f) * 1.04f
+            val range = (maxVal - minVal).coerceAtLeast(1f)
+
+            // 1. Líneas guía horizontales y valores
+            val numGrid = 3
+            for (i in 0..numGrid) {
+                val y = padTop + (chartHeight / numGrid) * i
+                canvas.drawLine(padLeft, y, width - padRight, y, gridPaint)
+                val v = maxVal - (range / numGrid) * i
+                val txt = "%.0f TH/s".format(v)
+                canvas.drawText(txt, width - padRight - textPaint.measureText(txt) - 4.dp(), y - 4.dp(), textPaint)
+            }
+
+            // 2. Línea de promedio punteada
+            val avgVal = puntos.average().toFloat()
+            val avgY = padTop + chartHeight * (1f - (avgVal - minVal) / range)
+            canvas.drawLine(padLeft, avgY, width - padRight, avgY, avgPaint)
+            val avgLabel = "Promedio: %.1f TH/s".format(avgVal)
+            val avgLabelPaint = Paint(textPaint).apply {
+                color = Color.parseColor("#F59E0B")
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            canvas.drawText(avgLabel, padLeft + 6.dp(), avgY - 5.dp(), avgLabelPaint)
+
+            // 3. Coordenadas de los puntos
+            val stepX = chartWidth / (puntos.size - 1)
+            val xs = FloatArray(puntos.size)
+            val ys = FloatArray(puntos.size)
+            for (i in puntos.indices) {
+                xs[i] = padLeft + i * stepX
+                ys[i] = padTop + chartHeight * (1f - (puntos[i] - minVal) / range)
+            }
+
+            // 4. Curva de Bézier suave
+            path.reset()
+            fillPath.reset()
+            path.moveTo(xs[0], ys[0])
+            fillPath.moveTo(xs[0], padTop + chartHeight)
+            fillPath.lineTo(xs[0], ys[0])
+
+            for (i in 0 until puntos.size - 1) {
+                val cx1 = (xs[i] + xs[i + 1]) / 2f
+                val cy1 = ys[i]
+                val cx2 = (xs[i] + xs[i + 1]) / 2f
+                val cy2 = ys[i + 1]
+                path.cubicTo(cx1, cy1, cx2, cy2, xs[i + 1], ys[i + 1])
+                fillPath.cubicTo(cx1, cy1, cx2, cy2, xs[i + 1], ys[i + 1])
+            }
+
+            fillPath.lineTo(xs.last(), padTop + chartHeight)
+            fillPath.close()
+
+            // 5. Relleno de degradado mint
+            val grad = LinearGradient(
+                0f, padTop, 0f, padTop + chartHeight,
+                intArrayOf(Color.parseColor("#5500C4B4"), Color.parseColor("#0A00C4B4"), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.7f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            fillPaint.shader = grad
+            canvas.drawPath(fillPath, fillPaint)
+
+            // 6. Línea principal de Hashrate
+            canvas.drawPath(path, linePaint)
+
+            // 7. Punto actual en vivo (último punto)
+            val lastIdx = puntos.size - 1
+            canvas.drawCircle(xs[lastIdx], ys[lastIdx], 6f.dp(), dotPaint)
+            canvas.drawCircle(xs[lastIdx], ys[lastIdx], 3f.dp(), dotInnerPaint)
+
+            // 8. Eje X con etiquetas de tiempo
+            if (etiquetasX.isNotEmpty()) {
+                val stepLabel = chartWidth / (etiquetasX.size - 1)
+                for (i in etiquetasX.indices) {
+                    val lx = padLeft + i * stepLabel
+                    val ly = height - 8f.dp()
+                    val text = etiquetasX[i]
+                    val tWidth = textPaint.measureText(text)
+                    val drawX = (lx - tWidth / 2f).coerceIn(padLeft, width - padRight - tWidth)
+                    canvas.drawText(text, drawX, ly, textPaint)
+                }
+            }
+
+            // 9. Tooltip interactivo si se toca
+            val idx = indiceTocado
+            if (idx != null && idx in puntos.indices) {
+                val tx = xs[idx]
+                val ty = ys[idx]
+
+                val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.parseColor("#00C4B4")
+                    strokeWidth = 1.2f.dp()
+                    pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f)
+                }
+                canvas.drawLine(tx, padTop, tx, padTop + chartHeight, guidePaint)
+                canvas.drawCircle(tx, ty, 6f.dp(), dotPaint)
+                canvas.drawCircle(tx, ty, 3f.dp(), dotInnerPaint)
+
+                val valText = "%.1f TH/s".format(puntos[idx])
+                val tW = tooltipText.measureText(valText)
+                val bubbleW = tW + 16.dp()
+                val bubbleH = 26f.dp()
+                val bubbleX = (tx - bubbleW / 2f).coerceIn(padLeft, width - padRight - bubbleW)
+                val bubbleY = (ty - bubbleH - 8.dp()).coerceAtLeast(4f.dp())
+
+                val rect = RectF(bubbleX, bubbleY, bubbleX + bubbleW, bubbleY + bubbleH)
+                canvas.drawRoundRect(rect, 6f.dp(), 6f.dp(), tooltipBg)
+                canvas.drawText(valText, bubbleX + 8.dp(), bubbleY + 17f.dp(), tooltipText)
+            }
+        }
+    }
+
+    private data class AsicRow(
+        val modelo: String,
+        val ip: String,
         val algo: String,
         val badge: String?,
+        val badgeColor: String?,
         val iconTxt: String,
         val iconBg: String,
-        val ganancia: String,
-        val gananciaUnidad: String,
-        val precio: String,
-        val hrPool: String,
-        val hrRed: String
+        val gananciaUsd: String,
+        val gananciaBtc: String,
+        val hashrateVal: String,
+        val hashrateUnidad: String,
+        val tempYEstado: String
     )
 
     private fun cambiarTab(nuevoTab: Int) {
@@ -1145,20 +1390,19 @@ class MainActivity : AppCompatActivity() {
         when (nuevoTab) {
             0 -> {
                 scrollInicioViaBTC.visibility = View.VISIBLE
+                scrollPoolViaBTC.visibility = View.GONE
                 panelLayout.visibility = View.GONE
                 scrollAgente.visibility = View.GONE
             }
             1 -> {
                 scrollInicioViaBTC.visibility = View.GONE
-                panelLayout.visibility = View.VISIBLE
+                scrollPoolViaBTC.visibility = View.VISIBLE
+                panelLayout.visibility = View.GONE
                 scrollAgente.visibility = View.GONE
-                val curUrl = webView.url ?: ""
-                if (!curUrl.contains("/resumen") && !curUrl.contains("/login")) {
-                    webView.loadUrl("https://elminerogris.com/resumen")
-                }
             }
             2 -> {
                 scrollInicioViaBTC.visibility = View.GONE
+                scrollPoolViaBTC.visibility = View.GONE
                 panelLayout.visibility = View.VISIBLE
                 scrollAgente.visibility = View.GONE
                 val curUrl = webView.url ?: ""
@@ -1168,6 +1412,7 @@ class MainActivity : AppCompatActivity() {
             }
             3 -> {
                 scrollInicioViaBTC.visibility = View.GONE
+                scrollPoolViaBTC.visibility = View.GONE
                 panelLayout.visibility = View.GONE
                 scrollAgente.visibility = View.VISIBLE
                 sincronizarSesionDesdeWeb()
@@ -1195,7 +1440,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#F8FAFB"))
         }
 
-        // ==================== 1. CABECERA CON DEGRADADO MINT VIABTC ====================
+        // ==================== 1. CABECERA CON LOGO OFICIAL EL MINERO GRIS ====================
         val headerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val grad = GradientDrawable(
@@ -1221,11 +1466,18 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        val iconLogoCircle = TextView(this).apply {
-            text = "⛏️"
-            textSize = 17f
-            gravity = Gravity.CENTER
-            background = fondo("#00C4B4", 999)
+        val imgLogo = ImageView(this).apply {
+            try {
+                val resId = resources.getIdentifier("logo_elminerogris", "drawable", packageName)
+                if (resId != 0) {
+                    setImageResource(resId)
+                } else {
+                    setImageResource(R.mipmap.ic_launcher)
+                }
+            } catch (_: Exception) {
+                setImageResource(R.mipmap.ic_launcher)
+            }
+            scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(34.dp(), 34.dp()).apply {
                 rightMargin = 8.dp()
             }
@@ -1235,7 +1487,7 @@ class MainActivity : AppCompatActivity() {
             text = "El Minero Gris"
             textSize = 20f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#00BFA5"))
+            setTextColor(Color.parseColor("#1E2329"))
         }
 
         val badgeBeta = TextView(this).apply {
@@ -1251,7 +1503,7 @@ class MainActivity : AppCompatActivity() {
             ).apply { leftMargin = 7.dp() }
         }
 
-        brandBox.addView(iconLogoCircle)
+        brandBox.addView(imgLogo)
         brandBox.addView(txtBrand)
         brandBox.addView(badgeBeta)
 
@@ -1272,12 +1524,12 @@ class MainActivity : AppCompatActivity() {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
         val badgeNotif = TextView(this).apply {
-            text = "42"
+            text = "0"
             textSize = 9.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = fondo("#F6465D", 999)
+            background = fondo("#00C4B4", 999)
             layoutParams = FrameLayout.LayoutParams(18.dp(), 18.dp()).apply {
                 gravity = Gravity.TOP or Gravity.END
             }
@@ -1293,8 +1545,7 @@ class MainActivity : AppCompatActivity() {
             isClickable = true
             isFocusable = true
             setOnClickListener {
-                webView.loadUrl("https://elminerogris.com/ajustes")
-                cambiarTab(1)
+                cambiarTab(3)
             }
         }
 
@@ -1304,9 +1555,113 @@ class MainActivity : AppCompatActivity() {
         topBarRow.addView(brandBox)
         topBarRow.addView(topActions)
         headerContainer.addView(topBarRow)
+
+        // ==================== TARJETA RESUMEN DE LA GRANJA (KPIs) ====================
+        val kpiCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#FFFFFF", 14, "#E2E8F0")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 12.dp()
+            }
+            elevation = 1.5f * dp
+        }
+
+        val kpiRowTop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val boxHr = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        boxHr.addView(TextView(this).apply {
+            text = "Hashrate Total Flota"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+        val hrTotalRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+        }
+        hrTotalRow.addView(TextView(this).apply {
+            text = "348.5 "
+            textSize = 22f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#1E2329"))
+        })
+        hrTotalRow.addView(TextView(this).apply {
+            text = "TH/s"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00C4B4"))
+            setPadding(0, 0, 0, 2.dp())
+        })
+        boxHr.addView(hrTotalRow)
+
+        val boxGanancia = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        boxGanancia.addView(TextView(this).apply {
+            text = "Ganancia Diaria Est."
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+        boxGanancia.addView(TextView(this).apply {
+            text = "$ 11.64 USD"
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#0AC18E"))
+        })
+        boxGanancia.addView(TextView(this).apply {
+            text = "≈ 0.000192 BTC/día"
+            textSize = 10.5f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+
+        kpiRowTop.addView(boxHr)
+        kpiRowTop.addView(boxGanancia)
+        kpiCard.addView(kpiRowTop)
+
+        val kpiDivider = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.dp()).apply {
+                topMargin = 10.dp()
+                bottomMargin = 10.dp()
+            }
+            setBackgroundColor(Color.parseColor("#F1F5F9"))
+        }
+        kpiCard.addView(kpiDivider)
+
+        val kpiRowBottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        kpiRowBottom.addView(TextView(this).apply {
+            text = "● 3 Mineros en línea"
+            textSize = 11.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00BFA5"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        kpiRowBottom.addView(TextView(this).apply {
+            text = "⚡ Consumo: 6,574 W"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#64748B"))
+        })
+        kpiCard.addView(kpiRowBottom)
+
+        headerContainer.addView(kpiCard)
         root.addView(headerContainer)
 
-        // ==================== 2. GRID DE ACCESOS RÁPIDOS (2 FILAS X 4 BOTONES) ====================
+        // ==================== 2. GRID DE ACCESOS RÁPIDOS ASIC (2 FILAS X 4 BOTONES) ====================
         val gridCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#FFFFFF", 16, "#EDF2F4")
@@ -1315,6 +1670,7 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
+                topMargin = 8.dp()
                 leftMargin = 14.dp()
                 rightMargin = 14.dp()
                 bottomMargin = 14.dp()
@@ -1362,20 +1718,24 @@ class MainActivity : AppCompatActivity() {
                 bottomMargin = 14.dp()
             }
         }
-        rowGrid1.addView(crearBotonGrid("🎁", "Recompensas\npor referencias") {
-            webView.loadUrl("https://elminerogris.com/plan")
-            cambiarTab(1)
+        rowGrid1.addView(crearBotonGrid("🔍", "Escanear\nRed") {
+            actualizarTodoUI()
+            Toast.makeText(this, "Escaneando red local por mineros ASIC...", Toast.LENGTH_SHORT).show()
         })
-        rowGrid1.addView(crearBotonGrid("🧮", "Calculadora\nde Ganancias") {
-            webView.loadUrl("https://elminerogris.com/resumen#calcRentabilidad")
-            cambiarTab(1)
+        rowGrid1.addView(crearBotonGrid("⚡", "Reiniciar\nFlota") {
+            AlertDialog.Builder(this)
+                .setTitle("⚡ Reiniciar Mineros")
+                .setMessage("¿Deseas enviar comando de reinicio preventivo a los mineros conectados?")
+                .setPositiveButton("Reiniciar") { _, _ ->
+                    Toast.makeText(this, "Comando enviado a la flota", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
         })
-        rowGrid1.addView(crearBotonGrid("👁️", "El\nObservador") {
-            webView.loadUrl("https://elminerogris.com/hosting")
-            cambiarTab(1)
+        rowGrid1.addView(crearBotonGrid("🌡️", "Diagnóstico\nChips") {
+            cambiarTab(2)
         })
-        rowGrid1.addView(crearBotonGrid("🏆", "Ranking\nde Mineros") {
-            webView.loadUrl("https://elminerogris.com/granjas")
+        rowGrid1.addView(crearBotonGrid("⚙️", "Configurar\nPools") {
             cambiarTab(1)
         })
 
@@ -1383,27 +1743,28 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        rowGrid2.addView(crearBotonGrid("📰", "Blog\n ") {
-            webView.loadUrl("https://elminerogris.com/guia")
-            cambiarTab(1)
+        rowGrid2.addView(crearBotonGrid("🧮", "Calculadora\nRentabilidad") {
+            webView.loadUrl("https://elminerogris.com/resumen#calcRentabilidad")
+            cambiarTab(2)
         })
-        rowGrid2.addView(crearBotonGrid("🚀", "Transacción\nacelerada") {
-            cambiarTab(3)
+        rowGrid2.addView(crearBotonGrid("💾", "Firmware\nOTA") {
+            webView.loadUrl("https://elminerogris.com/firmware")
+            cambiarTab(2)
         })
-        rowGrid2.addView(crearBotonGrid("📊", "Estadísticas\n ") {
+        rowGrid2.addView(crearBotonGrid("📊", "Reporte\n24h") {
             webView.loadUrl("https://elminerogris.com/resumen")
-            cambiarTab(1)
+            cambiarTab(2)
         })
-        rowGrid2.addView(crearBotonGrid("⚙️", "Ajustes\n ") {
-            webView.loadUrl("https://elminerogris.com/ajustes")
-            cambiarTab(1)
+        rowGrid2.addView(crearBotonGrid("☁️", "Panel\nCloud") {
+            webView.loadUrl("https://elminerogris.com/resumen")
+            cambiarTab(2)
         })
 
         gridCard.addView(rowGrid1)
         gridCard.addView(rowGrid2)
         root.addView(gridCard)
 
-        // ==================== 3. TÍTULO DE SECCIÓN CON FILTRO ====================
+        // ==================== 3. TÍTULO DE SECCIÓN: TUS MINEROS ASIC ====================
         val secHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1418,16 +1779,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         val txtSecTitle = TextView(this).apply {
-            text = "Estadísticas del pool\nde minería"
+            text = "Mineros ASIC Activos"
             textSize = 17.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#1E2329"))
-            setLineSpacing(2f, 1.05f)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
         val pillFilter = TextView(this).apply {
-            text = "Clasificación por defecto ▾"
+            text = "Todos los ASICs (3) ▾"
             textSize = 11.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#00BFA5"))
@@ -1439,7 +1799,7 @@ class MainActivity : AppCompatActivity() {
         secHeader.addView(pillFilter)
         root.addView(secHeader)
 
-        // ==================== 4. ENCABEZADO DE TABLA ====================
+        // ==================== 4. ENCABEZADO DE TABLA DE ASICs ====================
         val tableHdr = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1452,15 +1812,15 @@ class MainActivity : AppCompatActivity() {
 
         val th1 = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
         }
         th1.addView(TextView(this).apply {
-            text = "Moneda"
+            text = "Minero / Modelo"
             textSize = 11f
             setTextColor(Color.parseColor("#848E9C"))
         })
         th1.addView(TextView(this).apply {
-            text = "Algoritmo"
+            text = "IP y Algoritmo"
             textSize = 10f
             setTextColor(Color.parseColor("#B0B8C1"))
         })
@@ -1468,7 +1828,7 @@ class MainActivity : AppCompatActivity() {
         val th2 = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f)
         }
         th2.addView(TextView(this).apply {
             text = "Ganancia Diaria"
@@ -1476,7 +1836,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#848E9C"))
         })
         th2.addView(TextView(this).apply {
-            text = "Precio"
+            text = "Est. USD / BTC"
             textSize = 10f
             setTextColor(Color.parseColor("#B0B8C1"))
         })
@@ -1484,15 +1844,15 @@ class MainActivity : AppCompatActivity() {
         val th3 = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
         }
         th3.addView(TextView(this).apply {
-            text = "Hashrate del pool"
+            text = "Hashrate Real"
             textSize = 11f
             setTextColor(Color.parseColor("#848E9C"))
         })
         th3.addView(TextView(this).apply {
-            text = "Hashrate de la red"
+            text = "Temp y Chips"
             textSize = 10f
             setTextColor(Color.parseColor("#B0B8C1"))
         })
@@ -1511,14 +1871,12 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#F0F2F5"))
         })
 
-        // ==================== 5. FILAS DE CRIPTOMONEDAS EXACTAS VIABTC ====================
-        val listaMonedas = listOf(
-            MonedaRow("BTC", "SHA256d", "Regalo", "₿", "#F7931A", "$ 0.0279", "TH/s", "60703.54 USD", "108.15 EH/s", "1055.44 EH/s"),
-            MonedaRow("BCH", "SHA256d", null, "₿", "#0AC18E", "$ 0.0261", "TH/s", "209.44 USD", "465.33 PH/s", "3.63 EH/s"),
-            MonedaRow("LTC", "Scrypt", "Regalo", "Ł", "#345D9D", "$ 0.3457", "GH/s", "43.57 USD", "518.21 TH/s", "2.59 PH/s"),
-            MonedaRow("ZEC", "Equihash", null, "ⓩ", "#ECB244", "$ 0.0273", "KSol/s", "716.68 USD", "11.03 GSol/s", "36.36 GSol/s"),
-            MonedaRow("DASH", "X11", null, "Đ", "#008CE7", "$ 0.0031", "GH/s", "36.02 USD", "1.14 PH/s", "2.7 PH/s"),
-            MonedaRow("KAS", "kHeavyHash", null, "𐤊", "#49EACB", "$ 0.1401", "TH/s", "0.0267 USD", "34.32 PH/s", "315.31 PH/s")
+        // ==================== 5. FILAS DE MINEROS ASIC (CON TH/s Y GANANCIA DIARIA) ====================
+        val listaAsics = listOf(
+            AsicRow("Antminer S21 Pro", "192.168.1.101", "SHA-256d", "Líder", "#10B981", "⛏️", "#00C4B4", "$ 7.82", "0.000129 BTC · 3510W", "234.2", "TH/s", "64°C · Normal 🟢"),
+            AsicRow("Antminer S19j Pro", "192.168.1.102", "SHA-256d", null, null, "⛏️", "#1E293B", "$ 3.48", "0.000057 BTC · 3050W", "104.5", "TH/s", "68°C · Normal 🟢"),
+            AsicRow("WhatsMiner M50S+", "192.168.1.103", "SHA-256d", null, null, "⚡", "#334155", "$ 4.55", "0.000075 BTC · 3264W", "136.0", "TH/s", "66°C · Normal 🟢"),
+            AsicRow("Antminer L7 9050M", "192.168.1.104", "Scrypt", "Dual", "#3B82F6", "Ł", "#345D9D", "$ 8.12", "LTC+DOGE · 3260W", "9.05", "GH/s", "63°C · Normal 🟢")
         )
 
         val listContainer = LinearLayout(this).apply {
@@ -1527,7 +1885,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        for (m in listaMonedas) {
+        for (a in listaAsics) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1543,16 +1901,16 @@ class MainActivity : AppCompatActivity() {
             val c1 = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.25f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
             }
 
-            val iconCoin = TextView(this).apply {
-                text = m.iconTxt
+            val iconAsic = TextView(this).apply {
+                text = a.iconTxt
                 textSize = 17f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
-                background = fondo(m.iconBg, 10)
+                background = fondo(a.iconBg, 10)
                 layoutParams = LinearLayout.LayoutParams(36.dp(), 36.dp()).apply {
                     rightMargin = 10.dp()
                 }
@@ -1565,19 +1923,19 @@ class MainActivity : AppCompatActivity() {
             }
 
             c1Header.addView(TextView(this).apply {
-                text = m.ticker
-                textSize = 15f
+                text = a.modelo
+                textSize = 14.5f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.parseColor("#1E2329"))
             })
 
-            if (m.badge != null) {
+            if (a.badge != null && a.badgeColor != null) {
                 c1Header.addView(TextView(this).apply {
-                    text = m.badge
+                    text = a.badge
                     textSize = 8.5f
                     setTypeface(null, Typeface.BOLD)
                     setTextColor(Color.WHITE)
-                    background = fondo("#FF4D4F", 4)
+                    background = fondo(a.badgeColor, 4)
                     setPadding(4.dp(), 1.dp(), 4.dp(), 1.dp())
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1588,18 +1946,18 @@ class MainActivity : AppCompatActivity() {
 
             c1Text.addView(c1Header)
             c1Text.addView(TextView(this).apply {
-                text = m.algo
-                textSize = 11f
+                text = "${a.ip} · ${a.algo}"
+                textSize = 10.5f
                 setTextColor(Color.parseColor("#848E9C"))
             })
 
-            c1.addView(iconCoin)
+            c1.addView(iconAsic)
             c1.addView(c1Text)
 
             val c2 = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f)
                 setPadding(0, 0, 8.dp(), 0)
             }
 
@@ -1608,28 +1966,28 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.END
             }
             c2RowTop.addView(TextView(this).apply {
-                text = m.ganancia + " "
+                text = a.gananciaUsd + " "
                 textSize = 13.5f
                 setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.parseColor("#1E2329"))
+                setTextColor(Color.parseColor("#0AC18E"))
             })
             c2RowTop.addView(TextView(this).apply {
-                text = m.gananciaUnidad
-                textSize = 11f
+                text = "/día"
+                textSize = 10.5f
                 setTextColor(Color.parseColor("#848E9C"))
             })
 
             c2.addView(c2RowTop)
             c2.addView(TextView(this).apply {
-                text = m.precio
-                textSize = 11f
+                text = a.gananciaBtc
+                textSize = 9.8f
                 setTextColor(Color.parseColor("#848E9C"))
             })
 
             val c3 = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL or Gravity.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
             }
 
             val c3Text = LinearLayout(this).apply {
@@ -1637,16 +1995,29 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.END
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-            c3Text.addView(TextView(this).apply {
-                text = m.hrPool
-                textSize = 13f
+
+            val c3RowTop = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+            }
+            c3RowTop.addView(TextView(this).apply {
+                text = a.hashrateVal + " "
+                textSize = 13.5f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.parseColor("#1E2329"))
             })
+            c3RowTop.addView(TextView(this).apply {
+                text = a.hashrateUnidad
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#00C4B4"))
+            })
+
+            c3Text.addView(c3RowTop)
             c3Text.addView(TextView(this).apply {
-                text = m.hrRed
-                textSize = 10.5f
-                setTextColor(Color.parseColor("#848E9C"))
+                text = a.tempYEstado
+                textSize = 10f
+                setTextColor(Color.parseColor("#64748B"))
             })
 
             val chevron = TextView(this).apply {
@@ -1678,7 +2049,7 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(listContainer)
 
-        // ==================== 6. TARJETA INFERIOR: TU FLOTA LOCAL ====================
+        // ==================== 6. TARJETA INFERIOR: TU AGENTE LOCAL 24/7 ====================
         val flotaCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = fondo("#FFFFFF", 14, "#E2E8F0")
@@ -1709,14 +2080,14 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
         flotaTop.addView(TextView(this).apply {
-            text = "● Listo para escanear"
+            text = "● Monitoreando"
             textSize = 11f
             setTextColor(Color.parseColor("#00BFA5"))
             setTypeface(null, Typeface.BOLD)
         })
 
         val flotaTxt = TextView(this).apply {
-            text = "Conecta este celular al Wi-Fi de tu granja para monitorear tus Antminer y WhatsMiner automáticamente en segundo plano."
+            text = "Escaneo continuo de red local, telemetría de placas hashboard y protección contra sobrecalentamiento."
             textSize = 11.5f
             setTextColor(Color.parseColor("#64748B"))
             lineHeight = (17 * dp).toInt()
@@ -1739,6 +2110,350 @@ class MainActivity : AppCompatActivity() {
         flotaCard.addView(flotaTxt)
         flotaCard.addView(btnIrAgente)
         root.addView(flotaCard)
+
+        scroll.addView(root)
+        return scroll
+    }
+
+    // ==================== VISTA: POOL DE MINERÍA CON GRÁFICO NATIVO ====================
+    private fun crearVistaPoolMineria(dp: Float): ScrollView {
+        fun Int.dp(): Int = (this * dp).toInt()
+        fun fondo(colorHex: String, radioDp: Int = 12, bordeHex: String? = null, grosorDp: Int = 1): GradientDrawable {
+            return GradientDrawable().apply {
+                setColor(Color.parseColor(colorHex))
+                cornerRadius = radioDp * dp
+                if (bordeHex != null) setStroke((grosorDp * dp).toInt(), Color.parseColor(bordeHex))
+            }
+        }
+
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
+            isFillViewport = true
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
+            setPadding(0, 0, 0, 24.dp())
+        }
+
+        // 1. Cabecera de Pool
+        val poolHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val grad = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#D5F5F0"), Color.parseColor("#F0FAF9"), Color.parseColor("#F8FAFB"))
+            )
+            background = grad
+            setPadding(18.dp(), 18.dp(), 18.dp(), 14.dp())
+        }
+
+        val rowPoolTop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val poolTitleBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val txtPoolName = TextView(this).apply {
+            text = "ViaBTC Pool ▾"
+            textSize = 19f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#1E2329"))
+        }
+        val txtPoolWorker = TextView(this).apply {
+            text = "Worker: elminerogris.001 · SHA-256d (PPS+)"
+            textSize = 11f
+            setTextColor(Color.parseColor("#64748B"))
+        }
+        poolTitleBox.addView(txtPoolName)
+        poolTitleBox.addView(txtPoolWorker)
+
+        val badgePoolStatus = TextView(this).apply {
+            text = "● 22 ms"
+            textSize = 11f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00BFA5"))
+            background = fondo("#E8F9F7", 12, "#B2EBF2")
+            setPadding(8.dp(), 4.dp(), 8.dp(), 4.dp())
+        }
+
+        rowPoolTop.addView(poolTitleBox)
+        rowPoolTop.addView(badgePoolStatus)
+        poolHeader.addView(rowPoolTop)
+        root.addView(poolHeader)
+
+        // 2. Tarjeta con Gráfico de Hashrate en tiempo real
+        val cardGrafico = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#FFFFFF", 16, "#EDF2F4")
+            setPadding(16.dp(), 16.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 14.dp()
+                rightMargin = 14.dp()
+                bottomMargin = 14.dp()
+            }
+            elevation = 2f * dp
+        }
+
+        val rowGraficoTop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val colHrActual = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        colHrActual.addView(TextView(this).apply {
+            text = "Hashrate Efectivo del Pool"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+
+        val rowHrGrande = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+        }
+        rowHrGrande.addView(TextView(this).apply {
+            text = "348.5 "
+            textSize = 24f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#1E2329"))
+        })
+        rowHrGrande.addView(TextView(this).apply {
+            text = "TH/s "
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00C4B4"))
+            setPadding(0, 0, 0, 2.dp())
+        })
+        rowHrGrande.addView(TextView(this).apply {
+            text = "+2.4%"
+            textSize = 11f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#0AC18E"))
+            background = fondo("#E8F9F3", 4)
+            setPadding(4.dp(), 1.dp(), 4.dp(), 1.dp())
+            setPadding(0, 0, 0, 2.dp())
+        })
+        colHrActual.addView(rowHrGrande)
+        rowGraficoTop.addView(colHrActual)
+        cardGrafico.addView(rowGraficoTop)
+
+        // Selector de Rango (1h, 24h, 7d, 30d)
+        val rowRangos = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = 12.dp()
+                bottomMargin = 8.dp()
+            }
+        }
+
+        val graficoView = GraficoHashrateView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                190.dp()
+            )
+        }
+
+        val botonesRangos = mutableListOf<TextView>()
+        fun crearBotonRango(rango: String, esDefault: Boolean = false): TextView {
+            val btn = TextView(this).apply {
+                text = rango
+                textSize = 11.5f
+                gravity = Gravity.CENTER
+                setTypeface(null, if (esDefault) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (esDefault) Color.parseColor("#00C4B4") else Color.parseColor("#848E9C"))
+                background = if (esDefault) fondo("#E8F9F7", 8, "#00C4B4") else fondo("#F4F6F8", 8)
+                setPadding(12.dp(), 5.dp(), 12.dp(), 5.dp())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    rightMargin = 6.dp()
+                }
+                setOnClickListener {
+                    graficoView.setRango(rango)
+                    for (b in botonesRangos) {
+                        val esEste = b == this
+                        b.setTypeface(null, if (esEste) Typeface.BOLD else Typeface.NORMAL)
+                        b.setTextColor(if (esEste) Color.parseColor("#00C4B4") else Color.parseColor("#848E9C"))
+                        b.background = if (esEste) fondo("#E8F9F7", 8, "#00C4B4") else fondo("#F4F6F8", 8)
+                    }
+                }
+            }
+            botonesRangos.add(btn)
+            return btn
+        }
+
+        rowRangos.addView(crearBotonRango("1h"))
+        rowRangos.addView(crearBotonRango("24h", true))
+        rowRangos.addView(crearBotonRango("7d"))
+        rowRangos.addView(crearBotonRango("30d"))
+        cardGrafico.addView(rowRangos)
+
+        // El Gráfico Interactivo
+        cardGrafico.addView(graficoView)
+
+        val txtTipGrafico = TextView(this).apply {
+            text = "👆 Desliza el dedo por el gráfico para ver el hashrate histórico"
+            textSize = 10f
+            setTextColor(Color.parseColor("#A0AEC0"))
+            gravity = Gravity.CENTER
+            setPadding(0, 6.dp(), 0, 0)
+        }
+        cardGrafico.addView(txtTipGrafico)
+        root.addView(cardGrafico)
+
+        // 3. Grid de Métricas de Rendimiento del Pool (2x2)
+        val gridMetricas = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = 14.dp()
+                rightMargin = 14.dp()
+                bottomMargin = 14.dp()
+            }
+        }
+
+        fun crearTarjetaKpi(titulo: String, valor: String, sub: String, colorValor: String): LinearLayout {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = fondo("#FFFFFF", 12, "#E2E8F0")
+                setPadding(14.dp(), 12.dp(), 14.dp(), 12.dp())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = 8.dp()
+                }
+                addView(TextView(this@MainActivity).apply {
+                    text = titulo
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#848E9C"))
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = valor
+                    textSize = 16f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(Color.parseColor(colorValor))
+                    setPadding(0, 3.dp(), 0, 1.dp())
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = sub
+                    textSize = 10f
+                    setTextColor(Color.parseColor("#64748B"))
+                })
+            }
+        }
+
+        val rowMetricas1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 10.dp()
+            }
+            addView(crearTarjetaKpi("Shares Aceptados", "48,290", "Eficiencia: 99.85%", "#0AC18E"))
+            addView(crearTarjetaKpi("Tasa de Rechazo", "0.15%", "14 shares stale", "#00C4B4"))
+        }
+
+        val rowMetricas2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(crearTarjetaKpi("Dificultad Vardiff", "65,536", "Adaptativa automática", "#1E2329"))
+            addView(crearTarjetaKpi("Workers Activos", "3 / 3", "100% en línea", "#0AC18E"))
+        }
+
+        gridMetricas.addView(rowMetricas1)
+        gridMetricas.addView(rowMetricas2)
+        root.addView(gridMetricas)
+
+        // 4. Liquidación y Pagos del Pool
+        val cardPagos = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#FFFFFF", 14, "#E2E8F0")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 14.dp()
+                rightMargin = 14.dp()
+                bottomMargin = 14.dp()
+            }
+        }
+
+        val pagosHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 8.dp()
+            }
+            addView(TextView(this@MainActivity).apply {
+                text = "💰 Liquidaciones y Saldo"
+                textSize = 13.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1E2329"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "PPS+ Diario"
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#00C4B4"))
+            })
+        }
+        cardPagos.addView(pagosHeader)
+
+        val saldoBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#F8FAFC", 8, "#E2E8F0")
+            setPadding(12.dp(), 10.dp(), 12.dp(), 10.dp())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 10.dp()
+            }
+            addView(TextView(this@MainActivity).apply {
+                text = "Saldo acumulado sin liquidar:"
+                textSize = 10.8f
+                setTextColor(Color.parseColor("#64748B"))
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "0.00142850 BTC  (≈ $86.40 USD)"
+                textSize = 14.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1E2329"))
+                setPadding(0, 2.dp(), 0, 0)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Umbral mínimo de retiro: 0.001 BTC · Próximo pago: 00:00 UTC"
+                textSize = 10f
+                setTextColor(Color.parseColor("#94A3B8"))
+                setPadding(0, 2.dp(), 0, 0)
+            })
+        }
+        cardPagos.addView(saldoBox)
+
+        val btnConfigStratum = Button(this).apply {
+            text = "⚙️   Configurar Stratum / Cambiar de Pool"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00C4B4"))
+            background = fondo("#E8F9F7", 8, "#B2EBF2")
+            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("⚙️ Stratum del Pool")
+                    .setMessage("URL Primaria:\nstratum+tcp://btc.viabtc.top:3333\n\nRespaldo 1:\nstratum+tcp://btc.viabtc.top:443\n\nRespaldo 2:\nstratum+tcp://btc.viabtc.top:25")
+                    .setPositiveButton("Copiar Stratum") { _, _ ->
+                        Toast.makeText(this@MainActivity, "Stratum copiado", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Cerrar", null)
+                    .show()
+            }
+        }
+        cardPagos.addView(btnConfigStratum)
+        root.addView(cardPagos)
 
         scroll.addView(root)
         return scroll
