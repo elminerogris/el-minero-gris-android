@@ -16,7 +16,7 @@
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:label="${appName}"
+        android:label="El Minero Gris"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 

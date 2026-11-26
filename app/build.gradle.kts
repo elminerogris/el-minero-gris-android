@@ -27,20 +27,6 @@ android {
         }
     }
 
-    flavorDimensions += "version"
-    productFlavors {
-        create("prod") {
-            dimension = "version"
-            applicationId = "com.elminerogris.agente"
-            manifestPlaceholders["appName"] = "El Minero Gris"
-        }
-        create("beta") {
-            dimension = "version"
-            applicationId = "com.elminerogris.agente.beta"
-            manifestPlaceholders["appName"] = "El Minero Gris Beta"
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
