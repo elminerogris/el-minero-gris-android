@@ -678,216 +678,107 @@ class MainActivity : AppCompatActivity() {
         panelLayout.addView(webView)
         panelLayout.addView(webProgressBar)
 
-        val esBeta = packageName.endsWith(".beta")
-        val contentFrame: FrameLayout
-        val bottomNav: LinearLayout
-        val mainLayout: LinearLayout
+        scrollInicioViaBTC = crearVistaInicioViaBTC(dp)
+        scrollPoolViaBTC = crearVistaPoolMineria(dp)
 
-        if (esBeta) {
-            // ==================== MODO BETA: INTERFAZ NUEVA ESTILO VIABTC (4 TABS) ====================
-            scrollInicioViaBTC = crearVistaInicioViaBTC(dp)
-            scrollPoolViaBTC = crearVistaPoolMineria(dp)
+        val contentFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            addView(scrollInicioViaBTC)
+            addView(scrollPoolViaBTC)
+            addView(panelLayout)
+            addView(scrollAgente)
+        }
 
-            contentFrame = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-                addView(scrollInicioViaBTC)
-                addView(scrollPoolViaBTC)
-                addView(panelLayout)
-                addView(scrollAgente)
+        // ==================== BARRA DE NAVEGACIÓN INFERIOR ESTILO VIABTC ====================
+        val bottomNav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.WHITE)
+            val borderTop = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                setStroke(1.dp(), Color.parseColor("#EEF0F2"))
             }
+            background = borderTop
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                58.dp()
+            )
+        }
 
-            bottomNav = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setBackgroundColor(Color.WHITE)
-                val borderTop = GradientDrawable().apply {
-                    setColor(Color.WHITE)
-                    setStroke(1.dp(), Color.parseColor("#EEF0F2"))
-                }
-                background = borderTop
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    58.dp()
-                )
-            }
-
-            fun crearTabItem(icono: String, texto: String, idx: Int): Pair<LinearLayout, TextView> {
-                val item = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                    isClickable = true
-                    isFocusable = true
-                    setOnClickListener { cambiarTab(idx) }
-                }
-
-                val iconTv = TextView(this).apply {
-                    text = icono
-                    textSize = 18f
-                    gravity = Gravity.CENTER
-                }
-
-                val labelTv = TextView(this).apply {
-                    text = texto
-                    textSize = 10.5f
-                    setTextColor(if (idx == 0) Color.parseColor("#00C4B4") else Color.parseColor("#848E9C"))
-                    setTypeface(null, if (idx == 0) Typeface.BOLD else Typeface.NORMAL)
-                    gravity = Gravity.CENTER
-                    setPadding(0, 1.dp(), 0, 0)
-                }
-
-                item.addView(iconTv)
-                item.addView(labelTv)
-                return Pair(item, labelTv)
-            }
-
-            val (t0, txt0) = crearTabItem("🏠", "Inicio", 0)
-            val (t1, txt1) = crearTabItem("📈", "Pool de minería", 1)
-            val (t2, txt2) = crearTabItem("⛏️", "Mineros", 2)
-            val (t3, txt3) = crearTabItem("💼", "Activos", 3)
-
-            tabBtnInicio = t0
-            txtTabInicio = txt0
-
-            tabBtnPanel = t1
-            txtTabPanel = txt1
-
-            tabBtnMineros = t2
-            txtTabMineros = txt2
-
-            tabBtnAgente = t3
-            txtTabAgente = txt3
-
-            bottomNav.addView(tabBtnInicio)
-            bottomNav.addView(tabBtnPanel)
-            bottomNav.addView(tabBtnMineros)
-            bottomNav.addView(tabBtnAgente)
-
-            mainLayout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor("#F8FAFB"))
-                addView(contentFrame)
-                addView(bottomNav)
-            }
-        } else {
-            // ==================== MODO PRODUCCIÓN: APP PRINCIPAL ORIGINAL (2 TABS OSCUROS) ====================
-            contentFrame = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-                addView(panelLayout)
-                addView(scrollAgente)
-            }
-
-            bottomNav = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setBackgroundColor(Color.parseColor("#0D111A"))
-                val borderTop = GradientDrawable().apply {
-                    setColor(Color.parseColor("#0D111A"))
-                    setStroke(1.dp(), Color.parseColor("#1E293B"))
-                }
-                background = borderTop
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    58.dp()
-                )
-            }
-
-            tabBtnPanel = LinearLayout(this).apply {
+        fun crearTabItem(icono: String, texto: String, idx: Int): Pair<LinearLayout, TextView> {
+            val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
                 isClickable = true
                 isFocusable = true
+                setOnClickListener { cambiarTab(idx) }
             }
 
-            txtTabPanel = TextView(this).apply {
-                text = "📊  Panel Web"
-                textSize = 13.5f
-                setTextColor(Color.parseColor("#3B82F6"))
-                setTypeface(null, Typeface.BOLD)
-                gravity = Gravity.CENTER
-            }
-            tabBtnPanel.addView(txtTabPanel)
-
-            tabBtnAgente = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                isClickable = true
-                isFocusable = true
-            }
-
-            val agenteRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
+            val iconTv = TextView(this).apply {
+                text = icono
+                textSize = 18f
                 gravity = Gravity.CENTER
             }
 
-            dotAgente = View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(7.dp(), 7.dp()).apply {
-                    rightMargin = 6.dp()
-                }
-                background = fondo("#64748B", 999)
-            }
-
-            txtTabAgente = TextView(this).apply {
-                text = "📡  Agente Wi-Fi"
-                textSize = 13.5f
-                setTextColor(Color.parseColor("#94A3B8"))
+            val labelTv = TextView(this).apply {
+                text = texto
+                textSize = 10.5f
+                setTextColor(if (idx == 0) Color.parseColor("#00C4B4") else Color.parseColor("#848E9C"))
+                setTypeface(null, if (idx == 0) Typeface.BOLD else Typeface.NORMAL)
                 gravity = Gravity.CENTER
+                setPadding(0, 1.dp(), 0, 0)
             }
 
-            agenteRow.addView(dotAgente)
-            agenteRow.addView(txtTabAgente)
-            tabBtnAgente.addView(agenteRow)
+            item.addView(iconTv)
+            item.addView(labelTv)
+            return Pair(item, labelTv)
+        }
 
-            bottomNav.addView(tabBtnPanel)
-            bottomNav.addView(tabBtnAgente)
+        val (t0, txt0) = crearTabItem("🏠", "Inicio", 0)
+        val (t1, txt1) = crearTabItem("📈", "Pool de minería", 1)
+        val (t2, txt2) = crearTabItem("⛏️", "Mineros", 2)
+        val (t3, txt3) = crearTabItem("💼", "Activos", 3)
 
-            tabBtnPanel.setOnClickListener { cambiarTab(0) }
-            tabBtnAgente.setOnClickListener {
-                sincronizarSesionDesdeWeb()
-                cambiarTab(1)
-            }
+        tabBtnInicio = t0
+        txtTabInicio = txt0
 
-            mainLayout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(Color.parseColor("#0A0C12"))
-                addView(contentFrame)
-                addView(bottomNav)
-            }
+        tabBtnPanel = t1
+        txtTabPanel = txt1
+
+        tabBtnMineros = t2
+        txtTabMineros = txt2
+
+        tabBtnAgente = t3
+        txtTabAgente = txt3
+
+        bottomNav.addView(tabBtnInicio)
+        bottomNav.addView(tabBtnPanel)
+        bottomNav.addView(tabBtnMineros)
+        bottomNav.addView(tabBtnAgente)
+
+        val mainLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
+            addView(contentFrame)
+            addView(bottomNav)
         }
 
         setContentView(mainLayout)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val esBetaApp = packageName.endsWith(".beta")
-                if (esBetaApp) {
-                    if (tabActual == 2 && webView.canGoBack()) {
-                        webView.goBack()
-                    } else if (tabActual != 0) {
-                        cambiarTab(0)
-                    } else {
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                        isEnabled = true
-                    }
+                if (tabActual == 2 && webView.canGoBack()) {
+                    webView.goBack()
+                } else if (tabActual != 0) {
+                    cambiarTab(0)
                 } else {
-                    if (tabActual == 0 && webView.canGoBack()) {
-                        webView.goBack()
-                    } else if (tabActual == 1) {
-                        cambiarTab(0)
-                    } else {
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                        isEnabled = true
-                    }
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
                 }
             }
         })
@@ -1500,76 +1391,51 @@ class MainActivity : AppCompatActivity() {
 
     private fun cambiarTab(nuevoTab: Int) {
         tabActual = nuevoTab
-        val esBetaApp = packageName.endsWith(".beta")
 
-        if (esBetaApp) {
-            val teal = Color.parseColor("#00C4B4")
-            val gray = Color.parseColor("#848E9C")
+        val teal = Color.parseColor("#00C4B4")
+        val gray = Color.parseColor("#848E9C")
 
-            if (::txtTabInicio.isInitialized) {
-                txtTabInicio.setTextColor(if (nuevoTab == 0) teal else gray)
-                txtTabInicio.setTypeface(null, if (nuevoTab == 0) Typeface.BOLD else Typeface.NORMAL)
-            }
-            if (::txtTabPanel.isInitialized) {
-                txtTabPanel.setTextColor(if (nuevoTab == 1) teal else gray)
-                txtTabPanel.setTypeface(null, if (nuevoTab == 1) Typeface.BOLD else Typeface.NORMAL)
-            }
-            if (::txtTabMineros.isInitialized) {
-                txtTabMineros.setTextColor(if (nuevoTab == 2) teal else gray)
-                txtTabMineros.setTypeface(null, if (nuevoTab == 2) Typeface.BOLD else Typeface.NORMAL)
-            }
-            if (::txtTabAgente.isInitialized) {
-                txtTabAgente.setTextColor(if (nuevoTab == 3) teal else gray)
-                txtTabAgente.setTypeface(null, if (nuevoTab == 3) Typeface.BOLD else Typeface.NORMAL)
-            }
+        txtTabInicio.setTextColor(if (nuevoTab == 0) teal else gray)
+        txtTabInicio.setTypeface(null, if (nuevoTab == 0) Typeface.BOLD else Typeface.NORMAL)
 
-            when (nuevoTab) {
-                0 -> {
-                    if (::scrollInicioViaBTC.isInitialized) scrollInicioViaBTC.visibility = View.VISIBLE
-                    if (::scrollPoolViaBTC.isInitialized) scrollPoolViaBTC.visibility = View.GONE
-                    panelLayout.visibility = View.GONE
-                    scrollAgente.visibility = View.GONE
-                }
-                1 -> {
-                    if (::scrollInicioViaBTC.isInitialized) scrollInicioViaBTC.visibility = View.GONE
-                    if (::scrollPoolViaBTC.isInitialized) scrollPoolViaBTC.visibility = View.VISIBLE
-                    panelLayout.visibility = View.GONE
-                    scrollAgente.visibility = View.GONE
-                }
-                2 -> {
-                    if (::scrollInicioViaBTC.isInitialized) scrollInicioViaBTC.visibility = View.GONE
-                    if (::scrollPoolViaBTC.isInitialized) scrollPoolViaBTC.visibility = View.GONE
-                    panelLayout.visibility = View.VISIBLE
-                    scrollAgente.visibility = View.GONE
-                    val curUrl = webView.url ?: ""
-                    if (!curUrl.contains("/mineros")) {
-                        webView.loadUrl("https://elminerogris.com/mineros")
-                    }
-                }
-                3 -> {
-                    if (::scrollInicioViaBTC.isInitialized) scrollInicioViaBTC.visibility = View.GONE
-                    if (::scrollPoolViaBTC.isInitialized) scrollPoolViaBTC.visibility = View.GONE
-                    panelLayout.visibility = View.GONE
-                    scrollAgente.visibility = View.VISIBLE
-                    sincronizarSesionDesdeWeb()
-                }
+        txtTabPanel.setTextColor(if (nuevoTab == 1) teal else gray)
+        txtTabPanel.setTypeface(null, if (nuevoTab == 1) Typeface.BOLD else Typeface.NORMAL)
+
+        txtTabMineros.setTextColor(if (nuevoTab == 2) teal else gray)
+        txtTabMineros.setTypeface(null, if (nuevoTab == 2) Typeface.BOLD else Typeface.NORMAL)
+
+        txtTabAgente.setTextColor(if (nuevoTab == 3) teal else gray)
+        txtTabAgente.setTypeface(null, if (nuevoTab == 3) Typeface.BOLD else Typeface.NORMAL)
+
+        when (nuevoTab) {
+            0 -> {
+                scrollInicioViaBTC.visibility = View.VISIBLE
+                scrollPoolViaBTC.visibility = View.GONE
+                panelLayout.visibility = View.GONE
+                scrollAgente.visibility = View.GONE
             }
-        } else {
-            // Modo Producción: lógica clásica original (2 tabs)
-            if (nuevoTab == 0) {
+            1 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                scrollPoolViaBTC.visibility = View.VISIBLE
+                panelLayout.visibility = View.GONE
+                scrollAgente.visibility = View.GONE
+            }
+            2 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                scrollPoolViaBTC.visibility = View.GONE
                 panelLayout.visibility = View.VISIBLE
                 scrollAgente.visibility = View.GONE
-                txtTabPanel.setTextColor(Color.parseColor("#3B82F6"))
-                txtTabPanel.setTypeface(null, Typeface.BOLD)
-                txtTabAgente.setTextColor(Color.parseColor("#94A3B8"))
-                txtTabAgente.setTypeface(null, Typeface.NORMAL)
-            } else {
+                val curUrl = webView.url ?: ""
+                if (!curUrl.contains("/mineros")) {
+                    webView.loadUrl("https://elminerogris.com/mineros")
+                }
+            }
+            3 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                scrollPoolViaBTC.visibility = View.GONE
                 panelLayout.visibility = View.GONE
                 scrollAgente.visibility = View.VISIBLE
-                txtTabPanel.setTextColor(Color.parseColor("#94A3B8"))
-                txtTabPanel.setTypeface(null, Typeface.NORMAL)
-                txtTabAgente.setTextColor(Color.parseColor("#3B82F6"))
-                txtTabAgente.setTypeface(null, Typeface.BOLD)
+                sincronizarSesionDesdeWeb()
             }
         }
     }
