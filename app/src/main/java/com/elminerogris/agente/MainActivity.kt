@@ -178,18 +178,19 @@ class MainActivity : AppCompatActivity() {
 
         val pInfo = packageManager.getPackageInfo(packageName, 0)
         val versionLocalName = pInfo.versionName ?: "1.0"
+        val esBeta = packageName.endsWith(".beta")
 
         val headerTxt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         headerTxt.addView(TextView(this).apply {
-            text = "El Minero Gris"
+            text = if (esBeta) "El Minero Gris (Beta)" else "El Minero Gris"
             textSize = 20f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(if (esBeta) Color.parseColor("#38BDF8") else Color.WHITE)
         })
         headerTxt.addView(TextView(this).apply {
-            text = "Puente Local de Granja 24/7  •  v$versionLocalName"
+            text = if (esBeta) "🧪 Versión de Pruebas  •  v$versionLocalName" else "Puente Local de Granja 24/7  •  v$versionLocalName"
             textSize = 12f
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(if (esBeta) Color.parseColor("#F59E0B") else Color.parseColor("#94A3B8"))
         })
 
         header.addView(imgLogo)
@@ -1259,7 +1260,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun iniciarFlujoActualizacion() {
         try {
-            val url = if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
+            val esBeta = packageName.endsWith(".beta")
+            val defaultUrl = if (esBeta) {
+                "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris-Beta.apk"
+            } else {
+                "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
+            }
+            val url = if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else defaultUrl
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
