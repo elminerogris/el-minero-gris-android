@@ -55,8 +55,6 @@ class MainActivity : AppCompatActivity() {
     private var apkUpdateUrl = ""
     private var mostrandoFormularioLogin = false
     private var actualizandoSwitchInterno = false
-    private var esperandoPermisoInstalacion = false
-    private var descargandoApk = false
 
     // Componentes del Panel Web y Navegación
     private lateinit var webView: WebView
@@ -867,7 +865,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnActualizar.setOnClickListener {
-            if (descargandoApk) return@setOnClickListener
             if (apkUpdateUrl.isNotEmpty()) {
                 iniciarFlujoActualizacion()
             } else {
@@ -898,15 +895,6 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         actualizarTodoUI()
         iniciarRefrescoEnVivo()
-
-        if (esperandoPermisoInstalacion && apkUpdateUrl.isNotEmpty()) {
-            esperandoPermisoInstalacion = false
-            if (puedeInstalarApks()) {
-                descargarEInstalarConOkHttp()
-            } else {
-                btnActualizar.text = "⚠️   Activa permiso de instalación y reintenta"
-            }
-        }
     }
 
     override fun onPause() {
@@ -1216,139 +1204,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun puedeInstalarApks(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            packageManager.canRequestPackageInstalls()
-        } else {
-            true
-        }
-    }
-
     private fun iniciarFlujoActualizacion() {
-        if (!puedeInstalarApks() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            esperandoPermisoInstalacion = true
-            Toast.makeText(
-                this,
-                "Activa 'Permitir desde esta fuente' y vuelve atrás para instalar la actualización",
-                Toast.LENGTH_LONG
-            ).show()
-            try {
-                val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
-                esperandoPermisoInstalacion = false
-                descargarEInstalarConOkHttp()
-            }
-            return
-        }
-        descargarEInstalarConOkHttp()
-    }
-
-    private fun descargarEInstalarConOkHttp() {
-        descargandoApk = true
-        btnActualizar.isEnabled = false
-        btnActualizar.text = "⬇️   Conectando..."
-
-        scope.launch {
-            val archivoApk = withContext(Dispatchers.IO) {
-                descargarApkOkHttp(apkUpdateUrl) { pct ->
-                    scope.launch(Dispatchers.Main) {
-                        btnActualizar.text = if (pct >= 0) {
-                            "⬇️   Descargando actualización... $pct%"
-                        } else {
-                            "⬇️   Descargando actualización..."
-                        }
-                    }
-                }
-            }
-
-            descargandoApk = false
-            btnActualizar.isEnabled = true
-
-            if (archivoApk != null && archivoApk.exists() && archivoApk.length() > 100_000L) {
-                btnActualizar.text = "✅   Abriendo instalador..."
-                instalarApk(archivoApk)
-            } else {
-                btnActualizar.text = "🌐   Abriendo descarga en navegador..."
-                abrirDescargaEnNavegador()
-            }
-        }
-    }
-
-    private fun descargarApkOkHttp(urlStr: String, onProgress: (Int) -> Unit): File? {
-        return try {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .followRedirects(true)
-                .followSslRedirects(true)
-                .build()
-
-            val request = Request.Builder()
-                .url(urlStr)
-                .header("User-Agent", "ElMineroGris-Android")
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val body = response.body ?: return null
-                val totalBytes = body.contentLength()
-
-                val outFile = File(cacheDir, "ElMineroGris-Update.apk")
-                if (outFile.exists()) outFile.delete()
-
-                var downloaded = 0L
-                var lastPct = -1
-                val buffer = ByteArray(16 * 1024)
-
-                body.byteStream().use { input ->
-                    FileOutputStream(outFile).use { output ->
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            if (totalBytes > 0L) {
-                                val pct = ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                                if (pct != lastPct && (pct % 2 == 0 || pct == 100)) {
-                                    lastPct = pct
-                                    onProgress(pct)
-                                }
-                            } else if (lastPct == -1) {
-                                lastPct = 0
-                                onProgress(-1)
-                            }
-                        }
-                        output.flush()
-                    }
-                }
-                outFile
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun instalarApk(file: File) {
         try {
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val url = if (apkUpdateUrl.isNotEmpty()) apkUpdateUrl else "https://github.com/elminerogris/el-minero-gris-android/releases/latest/download/ElMineroGris.apk"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startActivity(intent)
         } catch (_: Exception) {
-            abrirDescargaEnNavegador()
+            Toast.makeText(this, "No se pudo abrir el enlace de descarga", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun abrirDescargaEnNavegador() {
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apkUpdateUrl)))
-        } catch (_: Exception) {}
     }
 
     private fun obtenerVersionNube(): JSONObject? {
