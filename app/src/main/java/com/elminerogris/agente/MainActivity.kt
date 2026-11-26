@@ -61,9 +61,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webProgressBar: ProgressBar
     private lateinit var panelLayout: FrameLayout
     private lateinit var scrollAgente: ScrollView
+    private lateinit var scrollInicioViaBTC: ScrollView
+    private lateinit var tabBtnInicio: LinearLayout
     private lateinit var tabBtnPanel: LinearLayout
+    private lateinit var tabBtnMineros: LinearLayout
     private lateinit var tabBtnAgente: LinearLayout
+    private lateinit var txtTabInicio: TextView
     private lateinit var txtTabPanel: TextView
+    private lateinit var txtTabMineros: TextView
     private lateinit var txtTabAgente: TextView
     private lateinit var dotAgente: View
     private var tabActual: Int = 0
@@ -644,23 +649,26 @@ class MainActivity : AppCompatActivity() {
         panelLayout.addView(webView)
         panelLayout.addView(webProgressBar)
 
+        scrollInicioViaBTC = crearVistaInicioViaBTC(dp)
+
         val contentFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
+            addView(scrollInicioViaBTC)
             addView(panelLayout)
             addView(scrollAgente)
         }
 
-        // ==================== BARRA DE NAVEGACIÓN INFERIOR ====================
+        // ==================== BARRA DE NAVEGACIÓN INFERIOR ESTILO VIABTC ====================
         val bottomNav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#0D111A"))
+            setBackgroundColor(Color.WHITE)
             val borderTop = GradientDrawable().apply {
-                setColor(Color.parseColor("#0D111A"))
-                setStroke(1.dp(), Color.parseColor("#1E293B"))
+                setColor(Color.WHITE)
+                setStroke(1.dp(), Color.parseColor("#EEF0F2"))
             }
             background = borderTop
             layoutParams = LinearLayout.LayoutParams(
@@ -669,66 +677,61 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        tabBtnPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-            isClickable = true
-            isFocusable = true
-        }
-
-        txtTabPanel = TextView(this).apply {
-            text = "📊  Panel Web"
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#3B82F6"))
-            setTypeface(null, Typeface.BOLD)
-            gravity = Gravity.CENTER
-        }
-        tabBtnPanel.addView(txtTabPanel)
-
-        tabBtnAgente = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-            isClickable = true
-            isFocusable = true
-        }
-
-        val agenteRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-
-        dotAgente = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(8.dp(), 8.dp()).apply {
-                rightMargin = 6.dp()
+        fun crearTabItem(icono: String, texto: String, idx: Int): Pair<LinearLayout, TextView> {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { cambiarTab(idx) }
             }
-            background = fondo("#64748B", 999)
+
+            val iconTv = TextView(this).apply {
+                text = icono
+                textSize = 18f
+                gravity = Gravity.CENTER
+            }
+
+            val labelTv = TextView(this).apply {
+                text = texto
+                textSize = 10.5f
+                setTextColor(if (idx == 0) Color.parseColor("#00C4B4") else Color.parseColor("#848E9C"))
+                setTypeface(null, if (idx == 0) Typeface.BOLD else Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                setPadding(0, 1.dp(), 0, 0)
+            }
+
+            item.addView(iconTv)
+            item.addView(labelTv)
+            return Pair(item, labelTv)
         }
 
-        txtTabAgente = TextView(this).apply {
-            text = "📡  Agente Wi-Fi"
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#94A3B8"))
-            gravity = Gravity.CENTER
-        }
+        val (t0, txt0) = crearTabItem("🏠", "Inicio", 0)
+        val (t1, txt1) = crearTabItem("🌐", "Pool de minería", 1)
+        val (t2, txt2) = crearTabItem("⛏️", "Mineros", 2)
+        val (t3, txt3) = crearTabItem("💼", "Activos", 3)
 
-        agenteRow.addView(dotAgente)
-        agenteRow.addView(txtTabAgente)
-        tabBtnAgente.addView(agenteRow)
+        tabBtnInicio = t0
+        txtTabInicio = txt0
 
+        tabBtnPanel = t1
+        txtTabPanel = txt1
+
+        tabBtnMineros = t2
+        txtTabMineros = txt2
+
+        tabBtnAgente = t3
+        txtTabAgente = txt3
+
+        bottomNav.addView(tabBtnInicio)
         bottomNav.addView(tabBtnPanel)
+        bottomNav.addView(tabBtnMineros)
         bottomNav.addView(tabBtnAgente)
-
-        tabBtnPanel.setOnClickListener { cambiarTab(0) }
-        tabBtnAgente.setOnClickListener {
-            sincronizarSesionDesdeWeb()
-            cambiarTab(1)
-        }
 
         val mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0A0C12"))
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
             addView(contentFrame)
             addView(bottomNav)
         }
@@ -737,9 +740,9 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (tabActual == 0 && webView.canGoBack()) {
+                if ((tabActual == 1 || tabActual == 2) && webView.canGoBack()) {
                     webView.goBack()
-                } else if (tabActual == 1) {
+                } else if (tabActual != 0) {
                     cambiarTab(0)
                 } else {
                     isEnabled = false
@@ -1108,23 +1111,637 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private data class MonedaRow(
+        val ticker: String,
+        val algo: String,
+        val badge: String?,
+        val iconTxt: String,
+        val iconBg: String,
+        val ganancia: String,
+        val gananciaUnidad: String,
+        val precio: String,
+        val hrPool: String,
+        val hrRed: String
+    )
+
     private fun cambiarTab(nuevoTab: Int) {
         tabActual = nuevoTab
-        if (nuevoTab == 0) {
-            panelLayout.visibility = View.VISIBLE
-            scrollAgente.visibility = View.GONE
-            txtTabPanel.setTextColor(Color.parseColor("#3B82F6"))
-            txtTabPanel.setTypeface(null, Typeface.BOLD)
-            txtTabAgente.setTextColor(Color.parseColor("#94A3B8"))
-            txtTabAgente.setTypeface(null, Typeface.NORMAL)
-        } else {
-            panelLayout.visibility = View.GONE
-            scrollAgente.visibility = View.VISIBLE
-            txtTabPanel.setTextColor(Color.parseColor("#94A3B8"))
-            txtTabPanel.setTypeface(null, Typeface.NORMAL)
-            txtTabAgente.setTextColor(Color.parseColor("#3B82F6"))
-            txtTabAgente.setTypeface(null, Typeface.BOLD)
+
+        val teal = Color.parseColor("#00C4B4")
+        val gray = Color.parseColor("#848E9C")
+
+        txtTabInicio.setTextColor(if (nuevoTab == 0) teal else gray)
+        txtTabInicio.setTypeface(null, if (nuevoTab == 0) Typeface.BOLD else Typeface.NORMAL)
+
+        txtTabPanel.setTextColor(if (nuevoTab == 1) teal else gray)
+        txtTabPanel.setTypeface(null, if (nuevoTab == 1) Typeface.BOLD else Typeface.NORMAL)
+
+        txtTabMineros.setTextColor(if (nuevoTab == 2) teal else gray)
+        txtTabMineros.setTypeface(null, if (nuevoTab == 2) Typeface.BOLD else Typeface.NORMAL)
+
+        txtTabAgente.setTextColor(if (nuevoTab == 3) teal else gray)
+        txtTabAgente.setTypeface(null, if (nuevoTab == 3) Typeface.BOLD else Typeface.NORMAL)
+
+        when (nuevoTab) {
+            0 -> {
+                scrollInicioViaBTC.visibility = View.VISIBLE
+                panelLayout.visibility = View.GONE
+                scrollAgente.visibility = View.GONE
+            }
+            1 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                panelLayout.visibility = View.VISIBLE
+                scrollAgente.visibility = View.GONE
+                val curUrl = webView.url ?: ""
+                if (!curUrl.contains("/resumen") && !curUrl.contains("/login")) {
+                    webView.loadUrl("https://elminerogris.com/resumen")
+                }
+            }
+            2 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                panelLayout.visibility = View.VISIBLE
+                scrollAgente.visibility = View.GONE
+                val curUrl = webView.url ?: ""
+                if (!curUrl.contains("/mineros")) {
+                    webView.loadUrl("https://elminerogris.com/mineros")
+                }
+            }
+            3 -> {
+                scrollInicioViaBTC.visibility = View.GONE
+                panelLayout.visibility = View.GONE
+                scrollAgente.visibility = View.VISIBLE
+                sincronizarSesionDesdeWeb()
+            }
         }
+    }
+
+    private fun crearVistaInicioViaBTC(dp: Float): ScrollView {
+        fun Int.dp(): Int = (this * dp).toInt()
+        fun fondo(colorHex: String, radioDp: Int = 12, bordeHex: String? = null, grosorDp: Int = 1): GradientDrawable {
+            return GradientDrawable().apply {
+                setColor(Color.parseColor(colorHex))
+                cornerRadius = radioDp * dp
+                if (bordeHex != null) setStroke((grosorDp * dp).toInt(), Color.parseColor(bordeHex))
+            }
+        }
+
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
+            isFillViewport = true
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#F8FAFB"))
+        }
+
+        // ==================== 1. CABECERA CON DEGRADADO MINT VIABTC ====================
+        val headerContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val grad = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#D5F5F0"), Color.parseColor("#F0FAF9"), Color.parseColor("#F8FAFB"))
+            )
+            background = grad
+            setPadding(18.dp(), 18.dp(), 18.dp(), 12.dp())
+        }
+
+        val topBarRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val brandBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val iconLogoCircle = TextView(this).apply {
+            text = "⛏️"
+            textSize = 17f
+            gravity = Gravity.CENTER
+            background = fondo("#00C4B4", 999)
+            layoutParams = LinearLayout.LayoutParams(34.dp(), 34.dp()).apply {
+                rightMargin = 8.dp()
+            }
+        }
+
+        val txtBrand = TextView(this).apply {
+            text = "El Minero Gris"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00BFA5"))
+        }
+
+        val badgeBeta = TextView(this).apply {
+            text = "BETA"
+            textSize = 9.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#D97706"))
+            background = fondo("#FEF3C7", 4, "#FDE68A")
+            setPadding(5.dp(), 2.dp(), 5.dp(), 2.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { leftMargin = 7.dp() }
+        }
+
+        brandBox.addView(iconLogoCircle)
+        brandBox.addView(txtBrand)
+        brandBox.addView(badgeBeta)
+
+        val topActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val bellFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(36.dp(), 36.dp()).apply {
+                rightMargin = 10.dp()
+            }
+        }
+        val iconBell = TextView(this).apply {
+            text = "🔔"
+            textSize = 19f
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+        val badgeNotif = TextView(this).apply {
+            text = "42"
+            textSize = 9.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = fondo("#F6465D", 999)
+            layoutParams = FrameLayout.LayoutParams(18.dp(), 18.dp()).apply {
+                gravity = Gravity.TOP or Gravity.END
+            }
+        }
+        bellFrame.addView(iconBell)
+        bellFrame.addView(badgeNotif)
+
+        val iconProfile = TextView(this).apply {
+            text = "👤"
+            textSize = 21f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(32.dp(), 32.dp())
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                webView.loadUrl("https://elminerogris.com/ajustes")
+                cambiarTab(1)
+            }
+        }
+
+        topActions.addView(bellFrame)
+        topActions.addView(iconProfile)
+
+        topBarRow.addView(brandBox)
+        topBarRow.addView(topActions)
+        headerContainer.addView(topBarRow)
+        root.addView(headerContainer)
+
+        // ==================== 2. GRID DE ACCESOS RÁPIDOS (2 FILAS X 4 BOTONES) ====================
+        val gridCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#FFFFFF", 16, "#EDF2F4")
+            setPadding(12.dp(), 16.dp(), 12.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 14.dp()
+                rightMargin = 14.dp()
+                bottomMargin = 14.dp()
+            }
+            elevation = 2f * dp
+        }
+
+        fun crearBotonGrid(icono: String, etiqueta: String, accion: () -> Unit): LinearLayout {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setPadding(4.dp(), 4.dp(), 4.dp(), 4.dp())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { accion() }
+            }
+
+            val iconCircle = TextView(this).apply {
+                text = icono
+                textSize = 21f
+                gravity = Gravity.CENTER
+                background = fondo("#F0FAF9", 999, "#D3F2EE")
+                layoutParams = LinearLayout.LayoutParams(46.dp(), 46.dp()).apply {
+                    bottomMargin = 6.dp()
+                }
+            }
+
+            val lbl = TextView(this).apply {
+                text = etiqueta
+                textSize = 10.5f
+                setTextColor(Color.parseColor("#2D3748"))
+                gravity = Gravity.CENTER
+                setLineSpacing(1f, 0.95f)
+            }
+
+            item.addView(iconCircle)
+            item.addView(lbl)
+            return item
+        }
+
+        val rowGrid1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 14.dp()
+            }
+        }
+        rowGrid1.addView(crearBotonGrid("🎁", "Recompensas\npor referencias") {
+            webView.loadUrl("https://elminerogris.com/plan")
+            cambiarTab(1)
+        })
+        rowGrid1.addView(crearBotonGrid("🧮", "Calculadora\nde Ganancias") {
+            webView.loadUrl("https://elminerogris.com/resumen#calcRentabilidad")
+            cambiarTab(1)
+        })
+        rowGrid1.addView(crearBotonGrid("👁️", "El\nObservador") {
+            webView.loadUrl("https://elminerogris.com/hosting")
+            cambiarTab(1)
+        })
+        rowGrid1.addView(crearBotonGrid("🏆", "Ranking\nde Mineros") {
+            webView.loadUrl("https://elminerogris.com/granjas")
+            cambiarTab(1)
+        })
+
+        val rowGrid2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        rowGrid2.addView(crearBotonGrid("📰", "Blog\n ") {
+            webView.loadUrl("https://elminerogris.com/guia")
+            cambiarTab(1)
+        })
+        rowGrid2.addView(crearBotonGrid("🚀", "Transacción\nacelerada") {
+            cambiarTab(3)
+        })
+        rowGrid2.addView(crearBotonGrid("📊", "Estadísticas\n ") {
+            webView.loadUrl("https://elminerogris.com/resumen")
+            cambiarTab(1)
+        })
+        rowGrid2.addView(crearBotonGrid("⚙️", "Ajustes\n ") {
+            webView.loadUrl("https://elminerogris.com/ajustes")
+            cambiarTab(1)
+        })
+
+        gridCard.addView(rowGrid1)
+        gridCard.addView(rowGrid2)
+        root.addView(gridCard)
+
+        // ==================== 3. TÍTULO DE SECCIÓN CON FILTRO ====================
+        val secHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 18.dp()
+                rightMargin = 18.dp()
+                bottomMargin = 10.dp()
+            }
+        }
+
+        val txtSecTitle = TextView(this).apply {
+            text = "Estadísticas del pool\nde minería"
+            textSize = 17.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#1E2329"))
+            setLineSpacing(2f, 1.05f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val pillFilter = TextView(this).apply {
+            text = "Clasificación por defecto ▾"
+            textSize = 11.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00BFA5"))
+            background = fondo("#E8F9F7", 14)
+            setPadding(10.dp(), 5.dp(), 10.dp(), 5.dp())
+        }
+
+        secHeader.addView(txtSecTitle)
+        secHeader.addView(pillFilter)
+        root.addView(secHeader)
+
+        // ==================== 4. ENCABEZADO DE TABLA ====================
+        val tableHdr = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(18.dp(), 6.dp(), 18.dp(), 8.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val th1 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f)
+        }
+        th1.addView(TextView(this).apply {
+            text = "Moneda"
+            textSize = 11f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+        th1.addView(TextView(this).apply {
+            text = "Algoritmo"
+            textSize = 10f
+            setTextColor(Color.parseColor("#B0B8C1"))
+        })
+
+        val th2 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+        }
+        th2.addView(TextView(this).apply {
+            text = "Ganancia Diaria"
+            textSize = 11f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+        th2.addView(TextView(this).apply {
+            text = "Precio"
+            textSize = 10f
+            setTextColor(Color.parseColor("#B0B8C1"))
+        })
+
+        val th3 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+        }
+        th3.addView(TextView(this).apply {
+            text = "Hashrate del pool"
+            textSize = 11f
+            setTextColor(Color.parseColor("#848E9C"))
+        })
+        th3.addView(TextView(this).apply {
+            text = "Hashrate de la red"
+            textSize = 10f
+            setTextColor(Color.parseColor("#B0B8C1"))
+        })
+
+        tableHdr.addView(th1)
+        tableHdr.addView(th2)
+        tableHdr.addView(th3)
+        root.addView(tableHdr)
+
+        root.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.dp()).apply {
+                leftMargin = 18.dp()
+                rightMargin = 18.dp()
+                bottomMargin = 4.dp()
+            }
+            setBackgroundColor(Color.parseColor("#F0F2F5"))
+        })
+
+        // ==================== 5. FILAS DE CRIPTOMONEDAS EXACTAS VIABTC ====================
+        val listaMonedas = listOf(
+            MonedaRow("BTC", "SHA256d", "Regalo", "₿", "#F7931A", "$ 0.0279", "TH/s", "60703.54 USD", "108.15 EH/s", "1055.44 EH/s"),
+            MonedaRow("BCH", "SHA256d", null, "₿", "#0AC18E", "$ 0.0261", "TH/s", "209.44 USD", "465.33 PH/s", "3.63 EH/s"),
+            MonedaRow("LTC", "Scrypt", "Regalo", "Ł", "#345D9D", "$ 0.3457", "GH/s", "43.57 USD", "518.21 TH/s", "2.59 PH/s"),
+            MonedaRow("ZEC", "Equihash", null, "ⓩ", "#ECB244", "$ 0.0273", "KSol/s", "716.68 USD", "11.03 GSol/s", "36.36 GSol/s"),
+            MonedaRow("DASH", "X11", null, "Đ", "#008CE7", "$ 0.0031", "GH/s", "36.02 USD", "1.14 PH/s", "2.7 PH/s"),
+            MonedaRow("KAS", "kHeavyHash", null, "𐤊", "#49EACB", "$ 0.1401", "TH/s", "0.0267 USD", "34.32 PH/s", "315.31 PH/s")
+        )
+
+        val listContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        for (m in listaMonedas) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(18.dp(), 14.dp(), 18.dp(), 14.dp())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    webView.loadUrl("https://elminerogris.com/mineros")
+                    cambiarTab(2)
+                }
+            }
+
+            val c1 = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.25f)
+            }
+
+            val iconCoin = TextView(this).apply {
+                text = m.iconTxt
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                background = fondo(m.iconBg, 10)
+                layoutParams = LinearLayout.LayoutParams(36.dp(), 36.dp()).apply {
+                    rightMargin = 10.dp()
+                }
+            }
+
+            val c1Text = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val c1Header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            c1Header.addView(TextView(this).apply {
+                text = m.ticker
+                textSize = 15f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1E2329"))
+            })
+
+            if (m.badge != null) {
+                c1Header.addView(TextView(this).apply {
+                    text = m.badge
+                    textSize = 8.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                    background = fondo("#FF4D4F", 4)
+                    setPadding(4.dp(), 1.dp(), 4.dp(), 1.dp())
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { leftMargin = 5.dp() }
+                })
+            }
+
+            c1Text.addView(c1Header)
+            c1Text.addView(TextView(this).apply {
+                text = m.algo
+                textSize = 11f
+                setTextColor(Color.parseColor("#848E9C"))
+            })
+
+            c1.addView(iconCoin)
+            c1.addView(c1Text)
+
+            val c2 = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f)
+                setPadding(0, 0, 8.dp(), 0)
+            }
+
+            val c2RowTop = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+            }
+            c2RowTop.addView(TextView(this).apply {
+                text = m.ganancia + " "
+                textSize = 13.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1E2329"))
+            })
+            c2RowTop.addView(TextView(this).apply {
+                text = m.gananciaUnidad
+                textSize = 11f
+                setTextColor(Color.parseColor("#848E9C"))
+            })
+
+            c2.addView(c2RowTop)
+            c2.addView(TextView(this).apply {
+                text = m.precio
+                textSize = 11f
+                setTextColor(Color.parseColor("#848E9C"))
+            })
+
+            val c3 = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+            }
+
+            val c3Text = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            c3Text.addView(TextView(this).apply {
+                text = m.hrPool
+                textSize = 13f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1E2329"))
+            })
+            c3Text.addView(TextView(this).apply {
+                text = m.hrRed
+                textSize = 10.5f
+                setTextColor(Color.parseColor("#848E9C"))
+            })
+
+            val chevron = TextView(this).apply {
+                text = "›"
+                textSize = 17f
+                setTextColor(Color.parseColor("#B0B8C1"))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { leftMargin = 6.dp() }
+            }
+
+            c3.addView(c3Text)
+            c3.addView(chevron)
+
+            row.addView(c1)
+            row.addView(c2)
+            row.addView(c3)
+
+            listContainer.addView(row)
+            listContainer.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.dp()).apply {
+                    leftMargin = 18.dp()
+                    rightMargin = 18.dp()
+                }
+                setBackgroundColor(Color.parseColor("#F4F6F8"))
+            })
+        }
+
+        root.addView(listContainer)
+
+        // ==================== 6. TARJETA INFERIOR: TU FLOTA LOCAL ====================
+        val flotaCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = fondo("#FFFFFF", 14, "#E2E8F0")
+            setPadding(16.dp(), 14.dp(), 16.dp(), 14.dp())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 14.dp()
+                leftMargin = 14.dp()
+                rightMargin = 14.dp()
+                bottomMargin = 24.dp()
+            }
+        }
+
+        val flotaTop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 6.dp()
+            }
+        }
+        flotaTop.addView(TextView(this).apply {
+            text = "⚡ Tu Agente Local 24/7"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#1E2329"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        flotaTop.addView(TextView(this).apply {
+            text = "● Listo para escanear"
+            textSize = 11f
+            setTextColor(Color.parseColor("#00BFA5"))
+            setTypeface(null, Typeface.BOLD)
+        })
+
+        val flotaTxt = TextView(this).apply {
+            text = "Conecta este celular al Wi-Fi de tu granja para monitorear tus Antminer y WhatsMiner automáticamente en segundo plano."
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#64748B"))
+            lineHeight = (17 * dp).toInt()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = 10.dp()
+            }
+        }
+
+        val btnIrAgente = Button(this).apply {
+            text = "📡   Abrir Monitor de Agente Local"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00BFA5"))
+            background = fondo("#E8F9F7", 8, "#B2EBF2")
+            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
+            setOnClickListener { cambiarTab(3) }
+        }
+
+        flotaCard.addView(flotaTop)
+        flotaCard.addView(flotaTxt)
+        flotaCard.addView(btnIrAgente)
+        root.addView(flotaCard)
+
+        scroll.addView(root)
+        return scroll
     }
 
     private fun sincronizarSesionDesdeWeb() {
