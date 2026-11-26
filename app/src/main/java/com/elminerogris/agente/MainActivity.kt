@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var liveRefreshJob: Job? = null
 
-    private val urlPanel = "https://elminerogris.com"
+    private val urlPanel = "https://elminerogris.com/login"
     private val urlLogin = "https://elminerogris.com/api/agente/login"
     private val urlVersion = "https://elminerogris.com/api/agente/apk_version"
     private var apkUpdateUrl = ""
