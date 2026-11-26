@@ -51,9 +51,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          gradle assembleRelease
-          gradle bundleRelease
+        run: gradle assembleRelease bundleRelease --stacktrace
 
       - name: Renombrar artefactos de lanzamiento
         run: |
