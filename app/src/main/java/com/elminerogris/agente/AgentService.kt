@@ -1751,9 +1751,13 @@ class AgentService : Service() {
                         peticion4028(ipDest, "resume")
                     }
                 }
-                accion == "blink" -> {
+                accion in listOf("blink", "blink_on") -> {
                     if (esWm) peticion4028(ipDest, "set_led")
                     else peticionHttp(ipDest, "blink.cgi", "POST", payloadJson = JSONObject().put("blink", "true"), timeoutMs = 6000)
+                }
+                accion == "blink_off" -> {
+                    if (esWm) peticion4028(ipDest, "set_led")
+                    else peticionHttp(ipDest, "blink.cgi", "POST", payloadJson = JSONObject().put("blink", "false"), timeoutMs = 6000)
                 }
                 accion.startsWith("profile|") -> {
                     val modo = accion.substringAfter("|").lowercase()
