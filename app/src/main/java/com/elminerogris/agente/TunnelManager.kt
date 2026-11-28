@@ -355,8 +355,8 @@ class TunnelManager(
         }
 
         var ocupada = false
-        var tipoDisp = "celular_pc"
-        var nomDisp = "Dispositivo de Red"
+        var tipoDisp = "lan_device"
+        var nomDisp = "Dispositivo en Red Local"
 
         // 1. Probar puertos clave en la red local
         val puertos = listOf(
@@ -386,7 +386,7 @@ class TunnelManager(
                         port == 4028 -> "minero"
                         port in listOf(554, 8000, 37777) -> "camara"
                         port in listOf(8008, 8060, 3000, 7000, 9080) -> "smart_tv"
-                        else -> "celular_pc"
+                        else -> "lan_device"
                     }
                 }
                 if (ocupada) break
@@ -394,8 +394,8 @@ class TunnelManager(
                 val err = (e.message ?: "").lowercase()
                 if ("refused" in err || "rechazada" in err || "econnrefused" in err || "reset" in err) {
                     ocupada = true
-                    nomDisp = "iPhone / Celular / PC Activo"
-                    tipoDisp = "celular_pc"
+                    nomDisp = "Dispositivo en Red Local"
+                    tipoDisp = "lan_device"
                     break
                 }
             }
@@ -407,8 +407,8 @@ class TunnelManager(
                 val inet = InetAddress.getByName(ip)
                 if (inet.isReachable(350)) {
                     ocupada = true
-                    nomDisp = "iPhone / Celular / PC en Línea"
-                    tipoDisp = "celular_pc"
+                    nomDisp = "Dispositivo en Red Local"
+                    tipoDisp = "lan_device"
                 }
             } catch (_: Exception) {}
         }
@@ -427,8 +427,8 @@ class TunnelManager(
                         val parts = line.split("\\s+".toRegex())
                         if (parts.size >= 4 && parts[0] == ip && parts[3] !in listOf("00:00:00:00:00:00", "incomplete")) {
                             ocupada = true
-                            nomDisp = "Dispositivo LAN (iPhone / Celular / PC)"
-                            tipoDisp = "celular_pc"
+                            nomDisp = "Dispositivo en Red Local"
+                            tipoDisp = "lan_device"
                         }
                     }
                 }

@@ -554,7 +554,7 @@ class AgentService : Service() {
                         arrMineros.put(
                             JSONObject()
                                 .put("ip", ip)
-                                .put("modelo", if (isGw) "Router / Gateway" else "Dispositivo LAN (iPhone / Celular / PC)")
+                                .put("modelo", if (isGw) "Router / Gateway" else "Dispositivo en Red Local")
                                 .put("marca", if (isGw) "Router / Gateway" else "Equipo de Red")
                                 .put("es_asic", false)
                                 .put("tipo", "no_asic")
