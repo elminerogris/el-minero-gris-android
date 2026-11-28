@@ -7,6 +7,12 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -118,6 +124,13 @@ class TunnelManager(
                         if (msg.optString("tipo") == "http_req") {
                             launch(Dispatchers.IO) {
                                 manejarPeticionProxy(ws, msg)
+                            }
+                            return@launch
+                        }
+
+                        if (msg.optString("tipo") == "check_lan_ip") {
+                            launch(Dispatchers.IO) {
+                                manejarCheckLanIp(ws, msg)
                             }
                             return@launch
                         }
@@ -329,5 +342,106 @@ class TunnelManager(
             sb.append(""", opaque="$opaque"""")
         }
         return sb.toString()
+    }
+
+    private fun manejarCheckLanIp(ws: WebSocket, msg: JSONObject) {
+        val reqId = msg.optString("req_id")
+        val ip = msg.optString("ip").trim()
+        if (!esIpLocalPrivada(ip)) {
+            try {
+                ws.send(JSONObject().put("tipo", "check_lan_ip_resp").put("req_id", reqId).put("ocupada", false).toString())
+            } catch (_: Exception) {}
+            return
+        }
+
+        var ocupada = false
+        var tipoDisp = "celular_pc"
+        var nomDisp = "Dispositivo de Red"
+
+        // 1. Probar puertos clave en la red local
+        val puertos = listOf(
+            Pair(4028, "Minero ASIC"),
+            Pair(80, "Dispositivo Web / Router"),
+            Pair(443, "Dispositivo Seguro HTTPS"),
+            Pair(554, "Cámara de Seguridad (RTSP)"),
+            Pair(8000, "Cámara IP / Hikvision"),
+            Pair(37777, "Cámara CCTV / Dahua"),
+            Pair(8008, "Smart TV / Google Cast"),
+            Pair(8060, "Roku TV"),
+            Pair(3000, "Smart TV LG"),
+            Pair(7000, "Apple AirPlay"),
+            Pair(9080, "Samsung Smart TV"),
+            Pair(62078, "iPhone / Apple Sync"),
+            Pair(22, "Equipo Linux / SSH"),
+            Pair(445, "Computadora Windows (SMB)")
+        )
+
+        for ((port, label) in puertos) {
+            try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress(ip, port), 250)
+                    ocupada = true
+                    nomDisp = label
+                    tipoDisp = when {
+                        port == 4028 -> "minero"
+                        port in listOf(554, 8000, 37777) -> "camara"
+                        port in listOf(8008, 8060, 3000, 7000, 9080) -> "smart_tv"
+                        else -> "celular_pc"
+                    }
+                }
+                if (ocupada) break
+            } catch (e: Exception) {
+                val err = (e.message ?: "").lowercase()
+                if ("refused" in err || "rechazada" in err || "econnrefused" in err || "reset" in err) {
+                    ocupada = true
+                    nomDisp = "iPhone / Celular / PC Activo"
+                    tipoDisp = "celular_pc"
+                    break
+                }
+            }
+        }
+
+        // 2. Probar ping ICMP / Reachable
+        if (!ocupada) {
+            try {
+                val inet = InetAddress.getByName(ip)
+                if (inet.isReachable(350)) {
+                    ocupada = true
+                    nomDisp = "iPhone / Celular / PC en Línea"
+                    tipoDisp = "celular_pc"
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 3. Forzar resolución ARP mediante datagrama UDP y verificar /proc/net/arp
+        if (!ocupada) {
+            try {
+                DatagramSocket().use { ds ->
+                    val buf = ByteArray(1)
+                    ds.send(DatagramPacket(buf, 1, InetAddress.getByName(ip), 9))
+                }
+                Thread.sleep(100)
+                val fArp = File("/proc/net/arp")
+                if (fArp.exists()) {
+                    fArp.forEachLine { line ->
+                        val parts = line.split("\\s+".toRegex())
+                        if (parts.size >= 4 && parts[0] == ip && parts[3] !in listOf("00:00:00:00:00:00", "incomplete")) {
+                            ocupada = true
+                            nomDisp = "Dispositivo LAN (iPhone / Celular / PC)"
+                            tipoDisp = "celular_pc"
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val resp = JSONObject()
+            .put("tipo", "check_lan_ip_resp")
+            .put("req_id", reqId)
+            .put("ocupada", ocupada)
+            .put("tipo_disp", tipoDisp)
+            .put("nom_disp", nomDisp)
+
+        try { ws.send(resp.toString()) } catch (_: Exception) {}
     }
 }

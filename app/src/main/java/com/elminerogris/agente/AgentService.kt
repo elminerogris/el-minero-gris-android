@@ -36,7 +36,10 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -543,6 +546,23 @@ class AgentService : Service() {
 
                 val arrMineros = JSONArray()
                 for (r in resultados) arrMineros.put(r)
+
+                val minerosIps = resultados.map { it.optString("ip") }.toSet()
+                for (ip in ipsConocidas) {
+                    if (ip !in minerosIps) {
+                        val isGw = ip.endsWith(".1") || ip.endsWith(".254")
+                        arrMineros.put(
+                            JSONObject()
+                                .put("ip", ip)
+                                .put("modelo", if (isGw) "Router / Gateway" else "Dispositivo LAN (iPhone / Celular / PC)")
+                                .put("marca", if (isGw) "Router / Gateway" else "Equipo de Red")
+                                .put("es_asic", false)
+                                .put("tipo", "no_asic")
+                                .put("hashrate", 0.0)
+                                .put("temp", 0)
+                        )
+                    }
+                }
 
                 val telemetriaDev = obtenerTelemetriaCelular()
                 val routerMac = obtenerBssidWifi()
@@ -1588,6 +1608,20 @@ class AgentService : Service() {
 
     // ==================== ESCANEO DE RED CON SEMÁFORO Y MUTEX ====================
     private suspend fun escanearRed(subnet: String, ipsBase: List<String>): List<String> = scanMutex.withLock {
+        // Enviar datagramas UDP ligeros a toda la subred para forzar al kernel a resolver ARP para iPhones, celulares y PCs
+        try {
+            withContext(Dispatchers.IO) {
+                DatagramSocket().use { ds ->
+                    val buf = ByteArray(1)
+                    for (i in 1..254) {
+                        try {
+                            ds.send(DatagramPacket(buf, 1, InetAddress.getByName("$subnet.$i"), 9))
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
         coroutineScope {
             val encontradas = ipsBase.toMutableList()
             val probadas = (2..254).map { i ->
@@ -1596,12 +1630,18 @@ class AgentService : Service() {
                         val ip = "$subnet.$i"
                         try {
                             var found = false
-                            for (port in listOf(4028, 80)) {
+                            for (port in listOf(4028, 80, 443, 554, 8080, 8008, 62078)) {
                                 try {
-                                    Socket().use { s -> s.connect(InetSocketAddress(ip, port), 450) }
+                                    Socket().use { s -> s.connect(InetSocketAddress(ip, port), 280) }
                                     found = true
                                     break
-                                } catch (_: Exception) {}
+                                } catch (e: Exception) {
+                                    val err = (e.message ?: "").lowercase()
+                                    if ("refused" in err || "rechazada" in err || "econnrefused" in err || "reset" in err) {
+                                        found = true
+                                        break
+                                    }
+                                }
                             }
                             if (found) ip else null
                         } catch (_: Exception) { null }
@@ -1612,6 +1652,21 @@ class AgentService : Service() {
             for (ip in probadas) {
                 if (!encontradas.contains(ip)) encontradas.add(ip)
             }
+
+            // Leer tabla ARP del kernel
+            try {
+                val fArp = File("/proc/net/arp")
+                if (fArp.exists()) {
+                    fArp.forEachLine { line ->
+                        val parts = line.split("\\s+".toRegex())
+                        if (parts.size >= 4 && parts[0].startsWith("$subnet.") && parts[3] !in listOf("00:00:00:00:00:00", "incomplete")) {
+                            val ipArp = parts[0]
+                            if (!encontradas.contains(ipArp)) encontradas.add(ipArp)
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+
             encontradas
         }
     }
